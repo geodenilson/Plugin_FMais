@@ -6,6 +6,7 @@ o classificador de vegetação (scikit-learn, numpy, scipy, etc.).
 """
 
 import sys
+import os
 import subprocess
 import importlib
 from typing import List, Tuple, Optional
@@ -87,9 +88,57 @@ def formatar_mensagem_problemas(problemas: list) -> str:
     return "\n".join(linhas)
 
 
+def _find_python() -> str:
+    """
+    Localiza o executável Python real do ambiente QGIS.
+    No Windows, sys.executable geralmente aponta para qgis-bin.exe/qgis-ltr-bin.exe,
+    não para python.exe, o que faz subprocess abrir outra instância do QGIS.
+    """
+    exe = sys.executable
+    if exe and "python" in os.path.basename(exe).lower():
+        return exe
+
+    # Estratégia 1: python.exe ao lado do qgis-bin.exe (OSGeo4W)
+    qgis_dir = os.path.dirname(exe)
+    for candidate in ["python.exe", "python3.exe"]:
+        p = os.path.join(qgis_dir, candidate)
+        if os.path.isfile(p):
+            return p
+
+    # Estratégia 2: <QGIS_PREFIX>/bin/python.exe
+    bin_dir = os.path.join(qgis_dir, "bin")
+    for candidate in ["python.exe", "python3.exe"]:
+        p = os.path.join(bin_dir, candidate)
+        if os.path.isfile(p):
+            return p
+
+    # Estratégia 3: Subir um nível (apps/qgis-ltr -> apps/Python312)
+    parent = os.path.dirname(qgis_dir)
+    for d in sorted(os.listdir(parent)) if os.path.isdir(parent) else []:
+        if d.lower().startswith("python"):
+            p = os.path.join(parent, d, "python.exe")
+            if os.path.isfile(p):
+                return p
+
+    # Estratégia 4: Procurar na variável OSGEO4W_ROOT
+    osgeo_root = os.environ.get("OSGEO4W_ROOT", "")
+    if osgeo_root:
+        for candidate in [
+            os.path.join(osgeo_root, "bin", "python.exe"),
+            os.path.join(osgeo_root, "apps", "Python312", "python.exe"),
+            os.path.join(osgeo_root, "apps", "Python311", "python.exe"),
+            os.path.join(osgeo_root, "apps", "Python39", "python.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                return candidate
+
+    # Fallback: usa sys.executable mesmo (pode não funcionar)
+    return exe
+
+
 def _pip_executable() -> list:
     """Retorna o comando base para chamar pip no Python do QGIS."""
-    return [sys.executable, "-m", "pip"]
+    return [_find_python(), "-m", "pip"]
 
 
 def instalar_pacotes(problemas: list, upgrade_numpy: bool = False) -> Tuple[bool, str]:
@@ -129,7 +178,10 @@ def instalar_pacotes(problemas: list, upgrade_numpy: bool = False) -> Tuple[bool
         "--disable-pip-version-check",
     ] + pacotes_para_instalar
 
+    python_usado = _find_python()
     log_linhas: List[str] = []
+    log_linhas.append(f"Python detectado: {python_usado}")
+    log_linhas.append(f"sys.executable: {sys.executable}")
     log_linhas.append(f"Comando: {' '.join(cmd)}\n")
 
     try:
@@ -138,6 +190,7 @@ def instalar_pacotes(problemas: list, upgrade_numpy: bool = False) -> Tuple[bool
             capture_output=True,
             text=True,
             timeout=600,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         log_linhas.append(result.stdout)
         if result.stderr:
