@@ -1,0 +1,235 @@
+{
+    "plugin_name": "Floresta+ Amazônia",
+    "version": "1.0.0",
+    "default_crs": "EPSG:102033",
+    "crs_name": "South America Albers Equal Area Conic",
+    
+    "tolerancias": {
+        "cnfp": 0.05,
+        "unidade_conservacao": 0.05,
+        "terra_indigena": 0.0,
+        "quilombola": 0.0,
+        "sobreposicao_car": 0.50,
+        "prodes_fase1": 6.25,
+        "prodes_fase2": 6.25
+    },
+    
+    "percentuais_rvn": {
+        "Floresta": 0.50,
+        "Cerrado": 0.35,
+        "Campos Gerais": 0.20
+    },
+    
+    "pagamento": {
+        "faixa1_max_ha": 60,
+        "faixa1_valor_ha": 200,
+        "faixa2_max_ha": 20,
+        "faixa2_valor_ha": 800,
+        "valor_minimo": 1500,
+        "valor_fixo_fase1": 1500
+    },
+    
+    "camadas_referencia": {
+        "amazonia_legal": {
+            "nome": "Amazônia Legal",
+            "descricao": "Limite oficial da Amazônia Legal",
+            "fonte": "IBGE",
+            "atualizacao": "Estática",
+            "tipo": "wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://geoservicos.ibge.gov.br/geoserver/wfs",
+            "layer_name": "CGMAT:pbqg22_15_LimAmazoniaLegal",
+            "url_download": "https://www.ibge.gov.br/geociencias/organizacao-do-territorio/estrutura-territorial/15819-amazonia-legal.html"
+        },
+        "municipios": {
+            "nome": "Municípios",
+            "descricao": "Limites municipais do Brasil (BC250 2025)",
+            "fonte": "IBGE",
+            "atualizacao": "Anual",
+            "tipo": "wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://geoservicos.ibge.gov.br/geoserver/wfs",
+            "layer_name": "CCAR:BC250_2025_lml_municipio_a",
+            "layer_name_fallback": "CCAR:BC250_2023_Municipio_A",
+            "url_download": "https://www.ibge.gov.br/geociencias/downloads-geociencias.html"
+        },
+        "unidades_federacao": {
+            "nome": "Unidades da Federação",
+            "descricao": "Limites estaduais do Brasil (BC250 2025)",
+            "fonte": "IBGE",
+            "atualizacao": "Anual",
+            "tipo": "wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://geoservicos.ibge.gov.br/geoserver/wfs",
+            "layer_name": "CCAR:BC250_2025_lml_unidade_federacao_a",
+            "url_download": "https://www.ibge.gov.br/geociencias/downloads-geociencias.html"
+        },
+        "car_amazonia": {
+            "nome": "CAR Amazônia Legal",
+            "descricao": "Cadastro Ambiental Rural da Amazônia Legal",
+            "fonte": "SICAR/MGI",
+            "atualizacao": "Mensal",
+            "tipo": "car_wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://geoserver.car.gov.br/geoserver/sicar/wfs",
+            "estados_amzl": ["AC", "AM", "AP", "MA", "MT", "PA", "RO", "RR", "TO"],
+            "url_download": "https://www.car.gov.br/"
+        },
+        "cnfp": {
+            "nome": "CNFP",
+            "descricao": "Cadastro Nacional de Florestas Públicas",
+            "fonte": "SFB",
+            "atualizacao": "Anual",
+            "tipo": "download",
+            "obrigatoria": true,
+            "url_download": "https://mapas.florestal.gov.br/portal/sharing/rest/content/items/0f0e8cecbc1e4cdd9d94f6ef1e0a5ae4/data"
+        },
+        "unidades_conservacao": {
+            "nome": "Unidades de Conservação",
+            "descricao": "UCs federais, estaduais e municipais",
+            "fonte": "CNUC/MMA",
+            "atualizacao": "Periódica",
+            "tipo": "wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://cnuc-mapserv.mma.gov.br/cgi-bin/mapserv?map=/var/www/storage/app/mapfiles/ucs.map",
+            "layer_name": "ms:ucs_selected",
+            "url_download": "https://cnuc.mma.gov.br/map"
+        },
+        "terras_indigenas": {
+            "nome": "Terras Indígenas",
+            "descricao": "Terras Indígenas em todas as fases de regularização",
+            "fonte": "FUNAI",
+            "atualizacao": "Periódica",
+            "tipo": "download",
+            "obrigatoria": true,
+            "url_download": "https://geoserver.funai.gov.br/geoserver/Funai/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=Funai%3Atis_poligonais&maxFeatures=10000&outputFormat=SHAPE-ZIP"
+        },
+        "quilombolas": {
+            "nome": "Territórios Quilombolas",
+            "descricao": "Territórios remanescentes de comunidades quilombolas",
+            "fonte": "INCRA",
+            "atualizacao": "Periódica",
+            "tipo": "quilombolas_wfs",
+            "obrigatoria": true,
+            "url_wfs_base": "http://acervofundiario.incra.gov.br/i3geo/ogc.php?tema=quilombolas_",
+            "estados": ["ac", "am", "ap", "ma", "mt", "pa", "pi", "ro", "rr", "to"],
+            "url_download": "https://certificacao.incra.gov.br/csv_shp/export_shp.py"
+        },
+        "embargos_ibama": {
+            "nome": "Embargos IBAMA",
+            "descricao": "Áreas embargadas pelo IBAMA",
+            "fonte": "IBAMA",
+            "atualizacao": "Periódica",
+            "tipo": "wfs",
+            "obrigatoria": true,
+            "url_wfs": "http://siscom.ibama.gov.br/geoserver/publica/wfs",
+            "layer_name": "publica:vw_brasil_adm_embargo_a",
+            "url_download": "https://servicos.ibama.gov.br/ctf/publico/areasembargadas/"
+        },
+        "embargos_icmbio": {
+            "nome": "Embargos ICMBio",
+            "descricao": "Áreas embargadas pelo ICMBio",
+            "fonte": "ICMBio",
+            "atualizacao": "Periódica",
+            "tipo": "download",
+            "obrigatoria": true,
+            "url_download": "https://www.gov.br/icmbio/pt-br/assuntos/dados_geoespaciais/mapa-tematico-e-dados-geoestatisticos-das-unidades-de-conservacao-federais/embargos_icmbio_shp.zip"
+        },
+        "fitofisionomia": {
+            "nome": "Fitofisionomia",
+            "descricao": "Mapa de Vegetação do Brasil 1:250.000",
+            "fonte": "IBGE",
+            "atualizacao": "Estática",
+            "tipo": "local",
+            "obrigatoria": true,
+            "url_download": "https://www.ibge.gov.br/geociencias/informacoes-ambientais/vegetacao.html"
+        },
+        "prodes": {
+            "nome": "PRODES",
+            "descricao": "Desmatamento detectado após 22/07/2008",
+            "fonte": "INPE",
+            "atualizacao": "Anual",
+            "tipo": "prodes_wfs",
+            "obrigatoria": true,
+            "url_wfs": "https://terrabrasilis.dpi.inpe.br/geoserver/prodes-legal-amz/yearly_deforestation/ows",
+            "layer_name": "prodes-legal-amz:yearly_deforestation",
+            "url_download": "http://terrabrasilis.dpi.inpe.br/"
+        },
+        "rvn": {
+            "nome": "Vegetação Nativa",
+            "descricao": "Mapeamento de RVN baseado em imagens Planet",
+            "fonte": "Mapeamento próprio",
+            "atualizacao": "Por análise",
+            "tipo": "local",
+            "obrigatoria": true,
+            "observacao": "Gerado pelo auxiliar de mapeamento do plugin"
+        },
+        "imoveis_analisar": {
+            "nome": "Imóveis a Analisar",
+            "descricao": "Imóveis rurais que terão elegibilidade avaliada",
+            "fonte": "Shapefile local",
+            "atualizacao": "Por análise",
+            "tipo": "local",
+            "obrigatoria": true,
+            "observacao": "Shapefile com os imóveis a serem analisados"
+        }
+    },
+    
+    "categorias_uc_excluidas": [
+        "Área de Proteção Ambiental",
+        "Monumento Natural",
+        "Área de Relevante Interesse Ecológico",
+        "Reserva Particular do Patrimônio Natural",
+        "Refúgio de Vida Silvestre"
+    ],
+    
+    "documentos_validos_cnfp": [
+        "Escritura",
+        "Certidão de registro",
+        "Concessão real de direito de uso",
+        "Título de propriedade sob condição resolutiva",
+        "Título de domínio",
+        "Título definitivo, com reserva florestal, em condomínio",
+        "Título definitivo sujeito a re-ratificação",
+        "Título definitivo transferido, com anuência do Órgão Fundiário (Estadual ou Federal)",
+        "Contrato de assentamento do Órgão Fundiário (Estadual ou Federal)"
+    ],
+    
+    "condicoes_car_fase2": [
+        "Analisado sem pendências",
+        "Analisado sem pendências, passível de nova análise",
+        "Analisado, em conformidade com a Lei nº 12.651/2012",
+        "Analisado, em conformidade com a Lei nº 12.651/2012, passível de emissão de Cota de Reserva Ambiental",
+        "Analisado, aguardando regularização ambiental (Lei nº 12.651/2012)",
+        "Analisado, em regularização ambiental (Lei nº 12.651/2012)"
+    ],
+    
+    "rvn_config": {
+        "amostras_csv": "amostras_todas_quads_AMZL_2.csv",
+        "quads_shapefile": "quads/quads.shp",
+        "quads_id_field": "quad_id",
+        "ndvi_threshold_veg": 0.3,
+        "ndwi_threshold_agua": 0.3,
+        "area_minima_ha": 0.25,
+        "classificador": "rf",
+        "comentario": "threshold = NDVI simples, rf = Random Forest com amostras"
+    },
+    
+    "basemaps": {
+        "osm": {
+            "nome": "OpenStreetMap",
+            "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            "tipo": "xyz"
+        },
+        "google_satellite": {
+            "nome": "Google Satélite",
+            "url": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+            "tipo": "xyz"
+        },
+        "esri_imagery": {
+            "nome": "ESRI Imagery",
+            "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            "tipo": "xyz"
+        }
+    }
+}

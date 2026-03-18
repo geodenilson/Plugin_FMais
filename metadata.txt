@@ -1,0 +1,23 @@
+[general]
+name=Floresta+ Amazônia
+qgisMinimumVersion=3.22
+description=Plugin para análise técnica automatizada de elegibilidade de imóveis rurais - Modalidade Conservação
+version=1.0.0
+author=Projeto Floresta+ Amazônia - MMA/PNUD
+email=florestamais@mma.gov.br
+about=Plugin QGIS para automatização da análise técnica de verificação de elegibilidade de imóveis rurais para a Modalidade Conservação do Projeto Floresta+ Amazônia, conforme estabelecido na Chamada Pública 02/2024. O projeto é uma iniciativa coordenada pelo Ministério do Meio Ambiente e Mudança do Clima (MMA) e executada pelo Programa das Nações Unidas para o Desenvolvimento (PNUD), com recursos provenientes do Fundo Verde para o Clima (GCF).
+tracker=https://github.com/florestamais/plugin-qgis/issues
+repository=https://github.com/florestamais/plugin-qgis
+tags=car, elegibilidade, floresta, amazonia, psa, conservacao, ambiental, sicar
+homepage=https://www.florestamaisamazonia.mma.gov.br
+category=Analysis
+icon=icone/Logo.png
+experimental=True
+deprecated=False
+hasProcessingProvider=no
+changelog=
+    1.0.0 - Versão inicial
+        - Aba de preparação de base de referência
+        - Integração com geoserviços (IBGE, FUNAI, ICMBio, etc.)
+        - Suporte a bases locais (shapefile, geopackage)
+        - Ferramenta de mapeamento de vegetação nativa
