@@ -10,8 +10,10 @@ Autor: Plugin Floresta+
 Data: Janeiro 2026
 """
 
+import importlib
 import os
 import re
+import sys
 import tempfile
 import traceback
 from typing import Dict, List, Set, Tuple, Optional, Any
@@ -53,8 +55,12 @@ class ConfigProcessamento:
     camada_rvn: str = "vegetacao_nativa"
     camada_amazonia_legal: str = "amazonia_legal"
     camada_municipios: str = "municipios"  # Camada de municípios (para extrair prioritários)
+    camada_biomas: str = "biomas"  # Camada de biomas (para priorização — A8)
+    camada_areas_prioritarias: str = "areas_prioritarias_conservacao"  # Áreas prioritárias (A4)
     
-    # Geocódigos dos municípios prioritários (Fase 1)
+    # Geocódigos dos municípios prioritários (Fase 1) — usado na ELEGIBILIDADE
+    # Lista padrão dos 81 municípios prioritários para ações de prevenção,
+    # controle e redução do desmatamento (referência: Lista MMA).
     geocodigos_prioritarios: Set[str] = field(default_factory=lambda: {
         "5101852", "1505064", "1100338", "5103858", "5108907", "5106240", "1302702",
         "5105101", "5107578", "5108303", "1200302", "1100452", "1506708", "5103254",
@@ -69,9 +75,69 @@ class ConfigProcessamento:
         "1200344", "1100940", "1508159", "1507805", "1504703", "1506005", "5105507",
         "1504455", "1505650", "1502764", "1503705"
     })
+
+    # ----------------------------------------------------------------------
+    # PRIORIZAÇÃO (Item 6 do Edital) — todos os campos a seguir são opcionais
+    # e SÓ são utilizados na nova etapa de priorização. Não interferem na
+    # análise de elegibilidade existente.
+    # ----------------------------------------------------------------------
+
+    # Habilitar/desabilitar análise de priorização (etapa adicional)
+    habilitar_priorizacao: bool = True
+
+    # Geocódigos das listas de municípios — gerenciadas na aba "Listas de Municípios"
+    # da janela de configuração. Pré-preenchidas com valores conhecidos.
+
+    # A2 — Municípios com Desmatamento Monitorado e Sob Controle (10)
+    geocodigos_desmate_controle: Set[str] = field(default_factory=lambda: {
+        "5100250", "5100359", "2100600", "1501725", "5101902",
+        "1100189", "5107248", "1507953", "5108006", "5108600"
+    })
+
+    # A3 — Municípios do Programa União com Municípios (70 = 81 prioritários - 11)
+    # Removidos: 1505064, 5108907, 5108303, 5103254, 1302603, 5104104,
+    #            5106299, 5100805, 5106307, 5107180, 5103353
+    geocodigos_programa_uniao: Set[str] = field(default_factory=lambda: {
+        "5101852", "1100338", "5103858", "5106240", "1302702", "5105101", "5107578",
+        "1200302", "1100452", "1506708", "1302405", "1100130", "1507300", "1200401",
+        "5106422", "5106158", "1502939", "1503606", "1500602", "1300904", "1505486",
+        "1300144", "1503754", "1303304", "1500859", "1508050", "1400472", "1508126",
+        "1505502", "1302009", "1505031", "1100809", "1400308", "5107354", "5101407",
+        "1504208", "1302900", "1300706", "1506187", "1504752", "1505809", "1200609",
+        "1501253", "1506195", "1506583", "5105150", "5103379", "5106802", "5107065",
+        "1100205", "5105580", "1301704", "5107776", "5103700", "5103056", "5107859",
+        "5103361", "5103304", "1200500", "1200344", "1100940", "1508159", "1507805",
+        "1504703", "1506005", "5105507", "1504455", "1505650", "1502764", "1503705"
+    })
+
+    # Critérios de área ativos (peso 1 cada)
+    crit_a1_ativo: bool = True   # Municípios prioritários (>50% área)
+    crit_a2_ativo: bool = True   # Municípios desmate sob controle (>50% área)
+    crit_a3_ativo: bool = True   # Municípios Programa União (>50% área)
+    crit_a4_ativo: bool = True   # Áreas prioritárias biodiversidade (intersect)
+    crit_a5_ativo: bool = True   # Entorno UC 3km (exceto APA/RPPN)
+    crit_a6_ativo: bool = True   # ≥50% sobreposto com APA/RPPN
+    crit_a7_ativo: bool = True   # Entorno TI 3km
+    crit_a8_ativo: bool = True   # Bioma Amazônia (IBGE)
+
+    # Planilha de candidatos (P1, P2, P3) — opcional
+    planilha_candidatos: str = ""  # Caminho do CSV/XLSX
+    mapeamento_candidatos: Dict[str, str] = field(default_factory=dict)
+    # Esperado: {"cpf": "<col>", "caf": "<col>", "sexo": "<col>", "sociobio": "<col>"}
+
+    # Buffer e tolerâncias da priorização
+    buffer_uc_km: float = 3.0   # buffer para A5
+    buffer_ti_km: float = 3.0   # buffer para A7
+    threshold_area_pct: float = 0.50   # >50% para A1, A2, A3, A4
+    threshold_apa_rppn: float = 0.50   # ≥50% para A6
     
     # Lista de códigos CAR a remover da análise de sobreposição
     lista_car_remover: str = ""  # Códigos separados por quebra de linha
+    
+    # Verificação de inadimplência via certidão MPF
+    verificar_certidao_mpf: bool = False
+    api_key_2captcha: str = ""
+    pasta_certidoes_mpf: str = ""
     
     # Tipo de fonte de dados e mapeamento de colunas
     tipo_fonte: str = "completa"  # 'completa', 'geoserver', 'consulta_publica'
@@ -188,6 +254,13 @@ class ProcessamentoElegiveis:
         
         # CRS para cálculos de área
         self.crs_area = QgsCoordinateReferenceSystem(config.crs_area)
+
+        # Mapeamento invertido: campo_interno → campo_real_na_layer
+        self._mapa_col = config.mapeamento_colunas or {}
+        
+    def _col(self, campo_interno: str) -> str:
+        """Traduz nome interno para o nome real na camada, conforme mapeamento do usuário."""
+        return self._mapa_col.get(campo_interno, campo_interno)
         
     def log(self, msg: str):
         """Envia mensagem para o log."""
@@ -218,6 +291,8 @@ class ProcessamentoElegiveis:
     def _get_attr_safe(self, feat: QgsFeature, field_names: List[str], default=None):
         """
         Obtém atributo de forma segura, tentando múltiplos nomes de campo.
+        Utiliza o mapeamento de colunas para traduzir nomes internos para
+        os nomes reais definidos pelo usuário.
         
         Args:
             feat: Feature do QGIS
@@ -227,16 +302,38 @@ class ProcessamentoElegiveis:
         Returns:
             Valor do primeiro campo encontrado ou default
         """
-        # Obter nomes dos campos disponíveis na feature
+        from qgis.PyQt.QtCore import QVariant as _QVariant
         campos_disponiveis = [f.name() for f in feat.fields()]
-        
+
+        nomes_expandidos = []
         for nome in field_names:
+            mapeado = self._col(nome)
+            if mapeado != nome:
+                nomes_expandidos.append(mapeado)
+            nomes_expandidos.append(nome)
+
+        for nome in nomes_expandidos:
             if nome in campos_disponiveis:
                 valor = feat.attribute(nome)
-                if valor is not None:
+                if valor is not None and not isinstance(valor, _QVariant):
                     return valor
+                if isinstance(valor, _QVariant) and not valor.isNull():
+                    return valor.value()
         
         return default
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        """Converte valor (possivelmente QVariant NULL) para float de forma segura."""
+        from qgis.PyQt.QtCore import QVariant as _QVariant
+        if value is None:
+            return default
+        if isinstance(value, _QVariant):
+            return float(value.value()) if not value.isNull() else default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
     
     def _calcular_area_ha(self, geom: QgsGeometry, crs_origem: QgsCoordinateReferenceSystem) -> float:
         """Calcula a área de uma geometria em hectares."""
@@ -403,9 +500,29 @@ class ProcessamentoElegiveis:
         ]
         
         # Criar camada em memória com campos da entrada + adicionais
+        campos_entrada = [f.name() for f in layer_entrada.fields()]
+        campos_entrada_lower = {c.lower() for c in campos_entrada}
+
+        # Determinar campos-alias (nome padrão → campo real) para garantir
+        # que o nome padrão exista na camada de saída mesmo que a entrada
+        # tenha usado outro nome. Ex.: mapeamento n_do_car → codigo_car
+        # cria um campo extra "n_do_car" com cópia do valor.
+        alias_map = {}  # {nome_padrao: nome_real_na_entrada}
+        for nome_padrao, nome_real in self._mapa_col.items():
+            if nome_padrao != nome_real and nome_padrao.lower() not in campos_entrada_lower:
+                alias_map[nome_padrao] = nome_real
+
         fields = QgsFields()
         for field in layer_entrada.fields():
             fields.append(field)
+        for nome_padrao in alias_map:
+            nome_real = alias_map[nome_padrao]
+            idx_orig = layer_entrada.fields().indexOf(nome_real)
+            if idx_orig >= 0:
+                tipo_orig = layer_entrada.fields().at(idx_orig).type()
+            else:
+                tipo_orig = QVariant.String
+            fields.append(QgsField(nome_padrao, tipo_orig))
         for nome, tipo in campos_adicionais:
             fields.append(QgsField(nome, tipo))
             
@@ -430,11 +547,17 @@ class ProcessamentoElegiveis:
             # Copiar atributos existentes
             for i, field in enumerate(layer_entrada.fields()):
                 new_feat.setAttribute(field.name(), feat[field.name()])
+
+            # Preencher campos-alias com valores do campo real correspondente
+            for nome_padrao, nome_real in alias_map.items():
+                new_feat.setAttribute(nome_padrao, feat[nome_real])
                 
             features.append(new_feat)
             
         provider.addFeatures(features)
         
+        if alias_map:
+            self.log(f"   Campos-alias criados: {', '.join(alias_map.keys())}")
         self.log(f"✓ Camada de saída criada com {self.output_layer.featureCount()} feições")
         return self.output_layer
     
@@ -512,7 +635,7 @@ class ProcessamentoElegiveis:
         for feat in self.output_layer.getFeatures():
             fid = feat.id()
             # Tentar diferentes nomes de campo para módulo fiscal
-            mod_val = self._get_attr_safe(feat, campos_modulo, 0)
+            mod_val = self._to_float(self._get_attr_safe(feat, campos_modulo, 0))
             
             # Avaliação do imóvel individual
             mod_flag = "Elegível" if mod_val <= self.config.limite_modulos_fiscais else "Não Elegível"
@@ -878,17 +1001,17 @@ class ProcessamentoElegiveis:
         campos_disponiveis = [f.name() for f in layer_car.fields()]
         self.log(f"   9.2 Campos disponíveis na camada CAR: {len(campos_disponiveis)}")
         
-        # Procurar campo de status
+        # Procurar campo de status (mapeamento do usuário tem prioridade)
         campo_status = None
-        campos_status_possiveis = ['ind_status', 'status_imo', 'status', 'ind_stat', 'situacao']
+        campos_status_possiveis = [self._col('status')] + ['ind_status', 'status_imo', 'status', 'ind_stat', 'situacao', 'status_imovel', 'status_imove']
         for campo in campos_status_possiveis:
             if campo in campos_disponiveis:
                 campo_status = campo
                 break
         
-        # Procurar campo de tipo
+        # Procurar campo de tipo (mapeamento do usuário tem prioridade)
         campo_tipo = None
-        campos_tipo_possiveis = ['tipo_imove', 'ind_tipo', 'tipo', 'tipo_imovel']
+        campos_tipo_possiveis = [self._col('tipo_imove')] + ['tipo_imove', 'ind_tipo', 'tipo', 'tipo_imovel']
         for campo in campos_tipo_possiveis:
             if campo in campos_disponiveis:
                 campo_tipo = campo
@@ -935,7 +1058,7 @@ class ProcessamentoElegiveis:
                     continue
             
             total_at_pe += 1
-            cod_imovel = self._get_attr_safe(feat, ["cod_imovel", "n_do_car"], "")
+            cod_imovel = str(self._get_attr_safe(feat, ["cod_imovel", "n_do_car"], "") or "").strip()
             
             # FILTRO 1: Remover se cod_imovel está na lista
             if cod_imovel in lista_remover:
@@ -943,8 +1066,8 @@ class ProcessamentoElegiveis:
                 continue
             
             # FILTRO 2: area / m_fiscal > 111 → remover
-            area = self._get_attr_safe(feat, ["area", "area_imove", "num_area"], 0)
-            m_fiscal = self._get_attr_safe(feat, ["m_fiscal", "modulo_f", "mod_fiscal"], 0)
+            area = self._to_float(self._get_attr_safe(feat, ["area", "area_imove", "num_area", "area_ha", "area_imovel"], 0))
+            m_fiscal = self._to_float(self._get_attr_safe(feat, ["m_fiscal", "modulo_f", "mod_fiscal"], 0))
             if m_fiscal > 0 and area > 0:
                 modulos_calc = area / m_fiscal
                 if modulos_calc > 111:
@@ -979,7 +1102,7 @@ class ProcessamentoElegiveis:
         for feat in self.output_layer.getFeatures():
             fid = feat.id()
             geom = feat.geometry()
-            car_atual = self._get_attr_safe(feat, ["n_do_car", "cod_imovel"])
+            car_atual = str(self._get_attr_safe(feat, ["n_do_car", "cod_imovel"]) or "").strip()
             
             if geom.isEmpty():
                 continue
@@ -1175,18 +1298,19 @@ class ProcessamentoElegiveis:
         
         for feat in self.output_layer.getFeatures():
             fid = feat.id()
-            area_car = self.area_dict.get(fid, 0)
-            area_imovel = self._get_attr_safe(feat, ["area_imove", "area", "num_area"], area_car)
+            area_car = float(self.area_dict.get(fid, 0) or 0)
+            area_imovel_raw = self._get_attr_safe(feat, ["area_imove", "area", "num_area", "area_ha", "area_imovel"], area_car)
+            area_imovel = float(area_imovel_raw or 0)
             
             # Classes de fitofisionomia
             classes = self.fit_dict.get(fid, set())
             fit_text = ", ".join(sorted(classes))
             
             # Área e percentual RVN (limitado ao tamanho do imóvel)
-            rvn_area = self.rvn_dict.get(fid, 0)
-            if rvn_area > area_imovel:
+            rvn_area = float(self.rvn_dict.get(fid, 0) or 0)
+            if rvn_area > area_imovel and area_imovel > 0:
                 rvn_area = area_imovel
-            pct_rvn = (rvn_area / area_car) if area_car else 0
+            pct_rvn = (rvn_area / area_car) if area_car > 0 else 0
             
             # Maior threshold exigido
             thresh = max((thresholds.get(c, 0) for c in classes), default=0)
@@ -1196,13 +1320,13 @@ class ProcessamentoElegiveis:
             status = "Elegível" if (rvn_area >= 1 and pct_rvn >= thresh) else "Não Elegível"
             
             # RVN por fito
-            rvn_floresta = self.rvn_fito_dict["Floresta"].get(fid, 0)
-            rvn_cerrado = self.rvn_fito_dict["Cerrado"].get(fid, 0)
-            rvn_campo = self.rvn_fito_dict["Campos Gerais"].get(fid, 0)
+            rvn_floresta = float(self.rvn_fito_dict["Floresta"].get(fid, 0) or 0)
+            rvn_cerrado = float(self.rvn_fito_dict["Cerrado"].get(fid, 0) or 0)
+            rvn_campo = float(self.rvn_fito_dict["Campos Gerais"].get(fid, 0) or 0)
             
-            rvn_floresta_p = (rvn_floresta / rvn_area) if rvn_area else 0
-            rvn_cerrado_p = (rvn_cerrado / rvn_area) if rvn_area else 0
-            rvn_campo_p = (rvn_campo / rvn_area) if rvn_area else 0
+            rvn_floresta_p = (rvn_floresta / rvn_area) if rvn_area > 0 else 0
+            rvn_cerrado_p = (rvn_cerrado / rvn_area) if rvn_area > 0 else 0
+            rvn_campo_p = (rvn_campo / rvn_area) if rvn_area > 0 else 0
             
             # Atualizar campos
             self.output_layer.changeAttributeValue(fid, self.output_layer.fields().indexOf("fitofisionomia"), fit_text)
@@ -1279,11 +1403,13 @@ class ProcessamentoElegiveis:
                 self.log(f"   ⚠ Campos de geocódigo ou nome não encontrados na camada de municípios")
         
         # Verificar campo 'municipio' nos imóveis
-        campos_imoveis = [f.name().lower() for f in self.output_layer.fields()]
+        campos_imoveis = [f.name() for f in self.output_layer.fields()]
+        campos_imoveis_lower = [c.lower() for c in campos_imoveis]
         campo_municipio_imovel = None
-        for campo in ["municipio", "nm_municipio", "nome_municipio", "mun"]:
-            if campo in campos_imoveis:
-                campo_municipio_imovel = campo
+        for campo in [self._col('municipio'), "municipio", "nm_municipio", "nome_municipio", "mun"]:
+            if campo.lower() in campos_imoveis_lower:
+                idx = campos_imoveis_lower.index(campo.lower())
+                campo_municipio_imovel = campos_imoveis[idx]
                 break
         
         if campo_municipio_imovel:
@@ -1369,9 +1495,9 @@ class ProcessamentoElegiveis:
         for feat in self.output_layer.getFeatures():
             fid = feat.id()
             
-            # Dados do imóvel
-            status_val = self._get_attr_safe(feat, ["status", "ind_status", "status_imo"], "")
-            cond_val = self._get_attr_safe(feat, ["condicao", "des_condic"], "")
+            # Dados do imóvel (strip para remover padding de shapefiles/DBF)
+            status_val = str(self._get_attr_safe(feat, ["status", "ind_status", "status_imo", "status_imovel", "status_imove"], "") or "").strip()
+            cond_val = str(self._get_attr_safe(feat, ["condicao", "des_condic", "condicao_imovel"], "") or "").strip()
             
             # Verificar se está em município prioritário (já calculado acima)
             in_prio = imovel_em_prioritario.get(fid, False)
@@ -1413,7 +1539,7 @@ class ProcessamentoElegiveis:
             # Verificar outros critérios
             mod_flag = feat.attribute("modulos_imovel")
             soma_flag = feat.attribute("soma_modulos")
-            soma_real = feat.attribute("soma_modulos_real") or 0
+            soma_real = self._to_float(feat.attribute("soma_modulos_real"))
             cnfp_flag = feat.attribute("cnfp")
             uc_flag = feat.attribute("uc")
             quil_flag = feat.attribute("quilombola")
@@ -1530,11 +1656,161 @@ class ProcessamentoElegiveis:
                 elegibilidade = "Inelegível"
                 
             self.output_layer.changeAttributeValue(fid, self.output_layer.fields().indexOf("elegibilidade"), elegibilidade)
-            # Cert MPF - por enquanto sempre Elegível
-            self.output_layer.changeAttributeValue(fid, self.output_layer.fields().indexOf("cert_mpf"), "Elegível")
+            
+            if not self.config.verificar_certidao_mpf:
+                self.output_layer.changeAttributeValue(fid, self.output_layer.fields().indexOf("cert_mpf"), "Elegível")
             
         self.output_layer.commitChanges()
         self.log("   ✓ Julgamento de elegibilidade concluído")
+    
+    def _cert_mpf_preencher_elegivel(self):
+        """Preenche cert_mpf com 'Elegível' para todos os imóveis."""
+        self.output_layer.startEditing()
+        idx = self.output_layer.fields().indexOf("cert_mpf")
+        for feat in self.output_layer.getFeatures():
+            self.output_layer.changeAttributeValue(feat.id(), idx, "Elegível")
+        self.output_layer.commitChanges()
+    
+    def _etapa_certidao_mpf(self):
+        """Verifica inadimplência via certidão MPF para imóveis elegíveis."""
+        self.log("\n13.1 Verificação de inadimplência via certidão MPF...")
+        self.log("     (este processo pode demorar vários minutos)")
+        
+        campos_cpf = ["cpf_cnpj", "cpf", "cnpj", "cpfcnpj", "cpf_cnpj_1"]
+        campo_cpf_real = self._col("cpf_cnpj")
+        candidatos = [campo_cpf_real] + campos_cpf
+        campos_layer = [f.name() for f in self.output_layer.fields()]
+        campo_encontrado = None
+        for c in candidatos:
+            if c in campos_layer:
+                campo_encontrado = c
+                break
+        
+        if not campo_encontrado:
+            self.log("   ⚠ Campo de CPF/CNPJ não encontrado na camada de imóveis.")
+            self.log("     A verificação de certidão MPF requer o campo 'cpf_cnpj'.")
+            self.log("     Etapa ignorada — assumindo Elegível para todos.")
+            self._cert_mpf_preencher_elegivel()
+            return
+        
+        deps_mpf = [
+            ("requests",         "requests"),
+        ]
+        faltantes = []
+        for mod_name, pip_name in deps_mpf:
+            try:
+                importlib.import_module(mod_name)
+            except ImportError:
+                faltantes.append(pip_name)
+        
+        
+        if faltantes:
+            self.log(f"   Instalando dependências: {', '.join(faltantes)}...")
+            try:
+                from Plugin_FMais.dependency_manager import _pip_executable
+                import subprocess as _sp
+                cmd = _pip_executable() + [
+                    "install", "--user", "--no-warn-script-location",
+                    "--disable-pip-version-check",
+                ] + faltantes
+                result = _sp.run(
+                    cmd, capture_output=True, text=True, timeout=300,
+                    creationflags=_sp.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                if result.returncode == 0:
+                    self.log(f"   ✓ {', '.join(faltantes)} instalado(s) com sucesso.")
+                    
+                    import site
+                    user_site = site.getusersitepackages()
+                    if user_site and user_site not in sys.path:
+                        sys.path.insert(0, user_site)
+                        self.log(f"   Adicionado ao path: {user_site}")
+                    
+                    appdata = os.environ.get("APPDATA", "")
+                    if appdata:
+                        py_ver = f"Python{sys.version_info.major}{sys.version_info.minor}"
+                        user_site_alt = os.path.join(appdata, "Python", py_ver, "site-packages")
+                        if os.path.isdir(user_site_alt) and user_site_alt not in sys.path:
+                            sys.path.insert(0, user_site_alt)
+                            self.log(f"   Adicionado ao path: {user_site_alt}")
+                    
+                    importlib.invalidate_caches()
+                else:
+                    self.log(f"   ⚠ Falha ao instalar: {result.stderr[:300]}")
+                    self.log("     Assumindo Elegível para todos.")
+                    self._cert_mpf_preencher_elegivel()
+                    return
+            except Exception as e:
+                self.log(f"   ⚠ Erro ao instalar dependências ({e}). Assumindo Elegível para todos.")
+                self._cert_mpf_preencher_elegivel()
+                return
+        
+        try:
+            from Plugin_FMais.core.certidao_mpf import verificar_certidoes_lote
+        except ImportError as e:
+            self.log(f"   ⚠ Dependências não disponíveis ({e}). Reinicie o QGIS e tente novamente.")
+            self._cert_mpf_preencher_elegivel()
+            return
+        
+        cpfs_fids = []
+        sem_cpf = 0
+        campos_cpf_busca = ["cpf_cnpj", "cpf", "cnpj", "cpfcnpj", "cpf_cnpj_1"]
+        campos_car_busca = ["n_do_car", "cod_imovel", "car", "codigo_car", "cod_car", "num_car"]
+        for feat in self.output_layer.getFeatures():
+            elegibilidade = str(self._get_attr_safe(feat, ["elegibilidade"], "")).strip()
+            if elegibilidade == "Inelegível":
+                continue
+            cpf = str(self._get_attr_safe(feat, campos_cpf_busca, "")).strip()
+            cod_imovel = str(self._get_attr_safe(feat, campos_car_busca, "")).strip()
+            if not cpf:
+                sem_cpf += 1
+                continue
+            cpfs_fids.append((cpf, feat.id(), cod_imovel))
+        
+        if sem_cpf > 0:
+            self.log(f"   ⚠ {sem_cpf} imóvel(is) elegível(is) sem CPF — assumindo Elegível para estes.")
+        
+        if not cpfs_fids:
+            self.log("   Nenhum imóvel elegível com CPF para verificar.")
+            self._cert_mpf_preencher_elegivel()
+            return
+        
+        self.log(f"   {len(cpfs_fids)} CPFs a verificar...")
+        
+        api_key = self.config.api_key_2captcha if self.config.api_key_2captcha else ""
+        if not api_key:
+            self.log("   ⚠ Chave 2Captcha não configurada. Assumindo Elegível para todos.")
+            self._cert_mpf_preencher_elegivel()
+            return
+        
+        save_dir = self.config.pasta_certidoes_mpf if self.config.pasta_certidoes_mpf else None
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            self.log(f"   PDFs serão salvos em: {save_dir}")
+        
+        resultados = verificar_certidoes_lote(
+            cpfs_fids=cpfs_fids,
+            api_key_2captcha=api_key,
+            save_dir=save_dir,
+            log=self.log,
+        )
+        
+        self.output_layer.startEditing()
+        idx_cert = self.output_layer.fields().indexOf("cert_mpf")
+        for fid, resultado in resultados.items():
+            self.output_layer.changeAttributeValue(fid, idx_cert, resultado)
+        
+        idx_cert_all = self.output_layer.fields().indexOf("cert_mpf")
+        for feat in self.output_layer.getFeatures():
+            val = feat.attribute("cert_mpf")
+            if not val or str(val).strip() == "":
+                self.output_layer.changeAttributeValue(feat.id(), idx_cert_all, "Elegível")
+        
+        self.output_layer.commitChanges()
+        
+        n_ok = sum(1 for v in resultados.values() if v == "Elegível")
+        n_nok = sum(1 for v in resultados.values() if v == "Não Elegível")
+        self.log(f"   ✓ Certidão MPF: {n_ok} nada consta, {n_nok} com registro")
     
     # =========================================================================
     # ETAPA 14: Cálculo de Valores
@@ -1589,7 +1865,7 @@ class ProcessamentoElegiveis:
             campos_per = (campos_ha / area_car) if area_car else 0
             
             # RVN total (já limitado ao tamanho do imóvel)
-            rvn_tot = feat.attribute("RVN_area") or 0
+            rvn_tot = self._to_float(feat.attribute("RVN_area"))
             
             # Mínima legal (Fase 2 - 80% Floresta)
             rvn_min = (
@@ -1647,21 +1923,21 @@ class ProcessamentoElegiveis:
             fid = feat.id()
             
             eleg = feat.attribute("elegibilidade")
-            f1_ha = feat.attribute("Faixa_1_ha") or 0
-            f1_val = feat.attribute("Faixa_1_val") or 0
-            f2_ha = feat.attribute("Faixa_2_ha") or 0
-            f2_val = feat.attribute("Faixa_2_val") or 0
-            total_val = feat.attribute("Total_rec") or 0
-            motivo_f1 = feat.attribute("Elegivel_F1") or ""
-            motivo_f2 = feat.attribute("Elegivel_F2") or ""
-            fit_txt = feat.attribute("fitofisionomia") or ""
+            f1_ha = self._to_float(feat.attribute("Faixa_1_ha"))
+            f1_val = self._to_float(feat.attribute("Faixa_1_val"))
+            f2_ha = self._to_float(feat.attribute("Faixa_2_ha"))
+            f2_val = self._to_float(feat.attribute("Faixa_2_val"))
+            total_val = self._to_float(feat.attribute("Total_rec"))
+            motivo_f1 = str(feat.attribute("Elegivel_F1") or "")
+            motivo_f2 = str(feat.attribute("Elegivel_F2") or "")
+            fit_txt = str(feat.attribute("fitofisionomia") or "")
             
-            fl_ha = feat.attribute("rvn_floresta") or 0
-            fl_per = feat.attribute("rvn_floresta_p") or 0
-            ce_ha = feat.attribute("rvn_cerrado") or 0
-            ce_per = feat.attribute("rvn_cerrado_p") or 0
-            cg_ha = feat.attribute("rvn_campo") or 0
-            cg_per = feat.attribute("rvn_campo_p") or 0
+            fl_ha = self._to_float(feat.attribute("rvn_floresta"))
+            fl_per = self._to_float(feat.attribute("rvn_floresta_p"))
+            ce_ha = self._to_float(feat.attribute("rvn_cerrado"))
+            ce_per = self._to_float(feat.attribute("rvn_cerrado_p"))
+            cg_ha = self._to_float(feat.attribute("rvn_campo"))
+            cg_per = self._to_float(feat.attribute("rvn_campo_p"))
             
             # Gerar texto do parecer
             if eleg == "Inelegível":
@@ -1728,6 +2004,281 @@ class ProcessamentoElegiveis:
         self.log("   ✓ Parecer gerado para todos os imóveis")
     
     # =========================================================================
+    # REPROCESSAR: ELEGIBILIDADE + JULGAMENTO + PARECER  (sem etapas espaciais)
+    # =========================================================================
+    @staticmethod
+    def reprocessar_parecer(layer: QgsVectorLayer, callback_log=None, mapeamento: dict = None):
+        """
+        Relê as colunas de critérios individuais já existentes na tabela e
+        recalcula em cascata:
+          1) Elegivel_F1 / Elegivel_F2  (a partir das flags de cada critério)
+          2) elegibilidade               (Fase 1, Fase 2 ou Inelegível)
+          3) parecer                     (texto do laudo)
+        Não refaz etapas espaciais — apenas lê colunas já preenchidas.
+        """
+        mapa = mapeamento or {}
+
+        def _col_r(campo_interno):
+            """Traduz nome interno para o nome real na camada via mapeamento."""
+            return mapa.get(campo_interno, campo_interno)
+        def _log(msg):
+            print(f"[Reprocessar] {msg}")
+            if callback_log:
+                callback_log(msg)
+
+        def _to_f(val):
+            if val is None or str(val).strip() == "":
+                return 0.0
+            try:
+                if hasattr(val, 'isNull') and val.isNull():
+                    return 0.0
+                return float(val)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _to_f_col(feat, name):
+            """Lê coluna como float seguro, retornando 0.0 se não existir."""
+            if name not in campos:
+                return 0.0
+            try:
+                return _to_f(feat.attribute(name))
+            except Exception:
+                return 0.0
+
+        def _attr(feat, name):
+            """Lê atributo como string segura. Retorna '' se a coluna não existir."""
+            if name not in campos:
+                return ""
+            try:
+                v = feat.attribute(name)
+            except Exception:
+                return ""
+            if v is None:
+                return ""
+            if hasattr(v, 'isNull') and v.isNull():
+                return ""
+            return str(v).strip()
+
+        _log("Reprocessando elegibilidade, julgamento e parecer...")
+
+        campos = [f.name() for f in layer.fields()]
+        necessarios = ["Elegivel_F1", "Elegivel_F2", "elegibilidade", "parecer"]
+        faltando = [c for c in necessarios if c not in campos]
+        if faltando:
+            _log(f"⚠ Campos ausentes na camada: {', '.join(faltando)}")
+            return False
+
+        layer.startEditing()
+
+        idx = {c: layer.fields().indexOf(c) for c in [
+            "Elegivel_F1", "Elegivel_F2", "elegibilidade", "parecer",
+            "em_prioritarios", "chek_status_f1", "condicao_Fase1",
+            "dentro_da_amzl", "chek_status_f2", "condicao_Fase2",
+            "cert_mpf",
+        ]}
+
+        alterados_f1 = 0
+        alterados_f2 = 0
+        count = 0
+
+        for feat in layer.getFeatures():
+            fid = feat.id()
+
+            # ------ ETAPA 1: Recalcular Elegivel_F1 e Elegivel_F2 ------
+            reasons_f1 = []
+            reasons_f2 = []
+
+            if _attr(feat, "em_prioritarios") == "Não Elegível":
+                reasons_f1.append("está fora dos municípios prioritários")
+            if _attr(feat, "chek_status_f1") == "Não Elegível":
+                reasons_f1.append("o status SICAR não corresponde AT ou PE")
+            if _attr(feat, "condicao_Fase1") == "Não Elegível":
+                reasons_f1.append("imóvel já analisado")
+
+            if _attr(feat, "dentro_da_amzl") == "Não Elegível":
+                reasons_f2.append("está fora da Amazônia Legal")
+            if _attr(feat, "chek_status_f2") == "Não Elegível":
+                reasons_f2.append("o status SICAR não corresponde AT")
+            if _attr(feat, "condicao_Fase2") == "Não Elegível":
+                reasons_f2.append("imóvel não analisado")
+
+            mod_flag = _attr(feat, "modulos_imovel")
+            soma_flag = _attr(feat, "soma_modulos")
+            soma_real = _to_f_col(feat, "soma_modulos_real")
+            cnfp_flag = _attr(feat, "cnfp")
+            uc_flag = _attr(feat, "uc")
+            quil_flag = _attr(feat, "quilombola")
+            indi_flag = _attr(feat, "terra_indi")
+            icm_flag = _attr(feat, "embargo_icmbio")
+            cpf_icm_flag = _attr(feat, "cpf_emb_icmbio")
+            iba_flag = _attr(feat, "embargo_ibama")
+            cpf_iba_flag = _attr(feat, "cpf_emb_ibama")
+            sobrep_flag = _attr(feat, "sobrep_car")
+            prodes_flag = _attr(feat, "prodes_6ha")
+            rvn_flag = _attr(feat, "rvn_minima")
+
+            mod_val = _to_f_col(feat, _col_r("modulo_f"))
+
+            if mod_flag == "Não Elegível":
+                msg = f"imóvel com {mod_val} Módulos Fiscais"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if soma_flag == "Não Elegível":
+                msg = f"soma de {soma_real:.2f} Módulos Fiscais por CPF"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if cnfp_flag == "Não Elegível":
+                msg = "possui mais de 5% de sobreposição com Floresta Pública Tipo B"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if uc_flag == "Não Elegível":
+                msg = "possui mais de 5% de sobreposição com Unidade de Conservação"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if quil_flag == "Não Elegível":
+                msg = "possui sobreposição com Território Remanescente de Quilombola"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if indi_flag == "Não Elegível":
+                msg = "possui sobreposição com Terra Indígena"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if icm_flag == "Não Elegível":
+                msg = "área com embargo do ICMBio"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if cpf_icm_flag == "Não Elegível":
+                reasons_f1.append("CPF com algum embargo na base do ICMBio")
+                reasons_f2.append("CPF com algum embargo na base do ICMBio")
+            if iba_flag == "Não Elegível":
+                msg = "área com embargo do IBAMA"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if cpf_iba_flag == "Não Elegível":
+                reasons_f1.append("CPF com algum embargo na base do IBAMA")
+                reasons_f2.append("CPF com algum embargo na base do IBAMA")
+            if sobrep_flag == "Não Elegível":
+                reasons_f1.append("possui mais de 50% de sobreposição com outro imóvel AT ou PE da base SICAR")
+            if prodes_flag == "Não Elegível":
+                msg = "possui mais de 6,25ha de sobreposição com PRODES após 22/07/2008"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+            if rvn_flag == "Não Elegível":
+                msg = "não possui RVN suficiente, conforme fitofisionomia"
+                reasons_f1.append(msg)
+                reasons_f2.append(msg)
+
+            novo_f1 = "SIM" if not reasons_f1 else ", ".join(reasons_f1)
+            novo_f2 = "SIM" if not reasons_f2 else ", ".join(reasons_f2)
+
+            antigo_f1 = _attr(feat, "Elegivel_F1")
+            antigo_f2 = _attr(feat, "Elegivel_F2")
+            if novo_f1 != antigo_f1:
+                alterados_f1 += 1
+            if novo_f2 != antigo_f2:
+                alterados_f2 += 1
+
+            if idx["Elegivel_F1"] >= 0:
+                layer.changeAttributeValue(fid, idx["Elegivel_F1"], novo_f1)
+            if idx["Elegivel_F2"] >= 0:
+                layer.changeAttributeValue(fid, idx["Elegivel_F2"], novo_f2)
+
+            # ------ ETAPA 2: Julgamento (elegibilidade) ------
+            if novo_f1 == "SIM":
+                elegibilidade = "Fase 1"
+            elif novo_f2 == "SIM":
+                elegibilidade = "Fase 2"
+            else:
+                elegibilidade = "Inelegível"
+
+            layer.changeAttributeValue(fid, idx["elegibilidade"], elegibilidade)
+
+            if idx["cert_mpf"] >= 0:
+                cert_val = _attr(feat, "cert_mpf")
+                if not cert_val:
+                    layer.changeAttributeValue(fid, idx["cert_mpf"], "Elegível")
+
+            # ------ ETAPA 3: Parecer ------
+            f1_ha = _to_f_col(feat, "Faixa_1_ha")
+            f1_val = _to_f_col(feat, "Faixa_1_val")
+            f2_ha = _to_f_col(feat, "Faixa_2_ha")
+            f2_val = _to_f_col(feat, "Faixa_2_val")
+            total_val = _to_f_col(feat, "Total_rec")
+            fit_txt = str(feat.attribute("fitofisionomia") or "")
+
+            fl_ha = _to_f_col(feat, "rvn_floresta")
+            fl_per = _to_f_col(feat, "rvn_floresta_p")
+            ce_ha = _to_f_col(feat, "rvn_cerrado")
+            ce_per = _to_f_col(feat, "rvn_cerrado_p")
+            cg_ha = _to_f_col(feat, "rvn_campo")
+            cg_per = _to_f_col(feat, "rvn_campo_p")
+
+            if elegibilidade == "Inelegível":
+                texto = (
+                    f"       O imóvel encontra-se INELEGÍVEL, pois não atendeu critérios da Fase 1: "
+                    f"{novo_f1}. E da Fase 2: {novo_f2}."
+                )
+            elif elegibilidade == "Fase 1":
+                texto = (
+                    "       O imóvel encontra-se ELEGÍVEL, atendendo aos critérios dos itens 1 a 17 da FASE 1. "
+                    "O Valor do pagamento corresponde a R$ 1.500,00."
+                )
+            elif elegibilidade == "Fase 2":
+                total_str = f"{total_val:,.2f}".replace(",", "v").replace(".", ",").replace("v", ".")
+                f1_val_str = f"{f1_val:,.2f}".replace(",", "v").replace(".", ",").replace("v", ".")
+                f2_val_str = f"{f2_val:,.2f}".replace(",", "v").replace(".", ",").replace("v", ".")
+                texto = (
+                    "       O imóvel encontra-se ELEGÍVEL, atendendo aos critérios dos itens 1 a 16 da FASE 2. "
+                    f"O Valor do pagamento é de R$ {total_str}, resultado da soma de: "
+                    f"1) R$ {f1_val_str}, correspondente a 80% do Remanescente de Vegetação Nativa ou {f1_ha:.2f}ha; e "
+                    f"2) R$ {f2_val_str}, correspondente ao excedente do Remanescente de Vegetação Nativa, acima de 80% ou {f2_ha:.2f}ha."
+                )
+            else:
+                texto = None
+
+            if texto and elegibilidade in ("Fase 1", "Fase 2") and fit_txt:
+                fitos, areas, pers = [], [], []
+                if "Floresta" in fit_txt and fl_ha > 0:
+                    fitos.append("Floresta")
+                    areas.append(f"{fl_ha:.2f} ha")
+                    pers.append(f"({fl_per*100:.2f}%)")
+                if "Cerrado" in fit_txt and ce_ha > 0:
+                    fitos.append("Cerrado")
+                    areas.append(f"{ce_ha:.2f} ha")
+                    pers.append(f"({ce_per*100:.2f}%)")
+                if "Campos Gerais" in fit_txt and cg_ha > 0:
+                    fitos.append("Campos Gerais")
+                    areas.append(f"{cg_ha:.2f} ha")
+                    pers.append(f"({cg_per*100:.2f}%)")
+
+                if fitos:
+                    if len(fitos) == 1:
+                        frase = (
+                            f"O Remanescente de Vegetação Nativa está 100% concentrado sobre a Fitofisionomia {fitos[0]}, "
+                            f"com área de {areas[0]}."
+                        )
+                    else:
+                        fitos_frase = " e ".join([", ".join(fitos[:-1]), fitos[-1]]) if len(fitos) > 2 else " e ".join(fitos)
+                        detalhes = [f"{a}, {p}" for a, p in zip(areas, pers)]
+                        detalhes_frase = ", ".join(detalhes[:-1]) + f" e {detalhes[-1]}" if len(detalhes) > 1 else detalhes[0]
+                        frase = (
+                            f"O Remanescente de Vegetação Nativa está sobre as Fitofisionomias {fitos_frase} "
+                            f"com área de {detalhes_frase}, respectivamente."
+                        )
+                    texto += " " + frase
+
+            layer.changeAttributeValue(fid, idx["parecer"], texto)
+            count += 1
+
+        layer.commitChanges()
+        _log(f"✓ {count} imóveis reprocessados")
+        if alterados_f1 or alterados_f2:
+            _log(f"   Alterações detectadas: {alterados_f1} em Elegivel_F1, {alterados_f2} em Elegivel_F2")
+        else:
+            _log("   Nenhuma alteração em Elegivel_F1/F2 (critérios inalterados)")
+        return True
+
+    # =========================================================================
     # MÉTODO PRINCIPAL: Executar Processamento
     # =========================================================================
     def executar(self) -> Optional[QgsVectorLayer]:
@@ -1744,16 +2295,21 @@ class ProcessamentoElegiveis:
             
             # Informar tipo de análise
             tipo_fonte = getattr(self.config, 'tipo_fonte', 'completa')
+            mapa = getattr(self.config, 'mapeamento_colunas', {})
             if tipo_fonte == 'completa':
-                self.log("📊 Tipo de análise: COMPLETA (dados do Metabase/SICAR)")
-            elif tipo_fonte == 'geoserver':
-                self.log("📊 Tipo de análise: PRELIMINAR (dados do Geoserver)")
-                self.log("   ⚠ Análises indisponíveis: soma módulos por CPF, embargos por CPF, documentos CNFP")
-            elif tipo_fonte == 'consulta_publica':
-                self.log("📊 Tipo de análise: PRELIMINAR (dados da Consulta Pública)")
-                self.log("   ⚠ Análises indisponíveis: soma módulos por CPF, embargos por CPF, documentos CNFP")
+                self.log("📊 Tipo de análise: COMPLETA")
             else:
-                self.log("📊 Tipo de análise: PADRÃO")
+                self.log("📊 Tipo de análise: PARCIAL")
+                ausentes = []
+                if 'cpf_cnpj' not in mapa:
+                    ausentes.append("soma módulos por CPF, embargos por CPF")
+                if 'documentos' not in mapa:
+                    ausentes.append("verificação de documentos CNFP")
+                if ausentes:
+                    self.log(f"   ⚠ Análises indisponíveis: {', '.join(ausentes)}")
+            
+            if mapa:
+                self.log(f"   Mapeamento de colunas: {len(mapa)} campos mapeados")
             
             # Armazenar tipo para uso nas etapas
             self.tipo_fonte = tipo_fonte
@@ -1770,7 +2326,12 @@ class ProcessamentoElegiveis:
             # Criar camada de saída
             self._criar_camada_saida(layer_imoveis)
             
-            total_etapas = 15
+            etapas_base = 15
+            if self.config.verificar_certidao_mpf:
+                etapas_base += 1
+            if getattr(self.config, "habilitar_priorizacao", True):
+                etapas_base += 1
+            total_etapas = etapas_base
             
             # Executar etapas
             self.progress(1, total_etapas)
@@ -1812,12 +2373,40 @@ class ProcessamentoElegiveis:
             self.progress(13, total_etapas)
             self._etapa_julgamento()
             
-            self.progress(14, total_etapas)
+            etapa_atual = 14
+            if self.config.verificar_certidao_mpf:
+                self.progress(etapa_atual, total_etapas)
+                self._etapa_certidao_mpf()
+                etapa_atual += 1
+            
+            self.progress(etapa_atual, total_etapas)
             self._etapa_calcular_valores()
+            etapa_atual += 1
             
-            self.progress(15, total_etapas)
+            self.progress(etapa_atual, total_etapas)
             self._etapa_parecer()
-            
+            etapa_atual += 1
+
+            # Etapa adicional: análise de priorização (Item 6 do Edital)
+            # Não interfere com a elegibilidade — apenas adiciona colunas
+            # de priorização à camada de saída.
+            if getattr(self.config, "habilitar_priorizacao", True):
+                try:
+                    from Plugin_FMais.core.priorizacao import PriorizacaoAnalise
+                    self.progress(etapa_atual, total_etapas)
+                    self.log("\n" + "=" * 60)
+                    self.log("Etapa adicional: análise de priorização")
+                    prio = PriorizacaoAnalise(
+                        self.config,
+                        self.output_layer,
+                        callback_log=self.callback_log,
+                        helper_carregar=self._carregar_camada,
+                    )
+                    prio.executar()
+                except Exception as e:
+                    self.log(f"⚠ Priorização falhou (não interfere na elegibilidade): {e}")
+                    traceback.print_exc()
+
             self.log("=" * 60)
             self.log("PROCESSAMENTO CONCLUÍDO COM SUCESSO!")
             self.log("=" * 60)

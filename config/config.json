@@ -172,6 +172,25 @@
             "tipo": "local",
             "obrigatoria": true,
             "observacao": "Shapefile com os imóveis a serem analisados"
+        },
+        "biomas": {
+            "nome": "Biomas",
+            "descricao": "Biomas do Brasil (IBGE 2019, 1:250.000) — usado na priorização (bioma Amazônia)",
+            "fonte": "IBGE",
+            "atualizacao": "Estática",
+            "tipo": "download",
+            "obrigatoria": false,
+            "url_download": "https://geoftp.ibge.gov.br/informacoes_ambientais/estudos_ambientais/biomas/vetores/Biomas_250mil.zip",
+            "observacao": "Camada usada apenas no cálculo de priorização (critério A8)"
+        },
+        "areas_prioritarias_conservacao": {
+            "nome": "Áreas Prioritárias para Conservação",
+            "descricao": "Áreas prioritárias para conservação da biodiversidade (MMA) — usada na priorização",
+            "fonte": "MMA",
+            "atualizacao": "Periódica",
+            "tipo": "local",
+            "obrigatoria": false,
+            "observacao": "Camada usada apenas no cálculo de priorização (critério A4 — intersect com municípios)"
         }
     },
     

@@ -176,6 +176,9 @@ class MainWindow(QMainWindow):
         # Dicionário para armazenar camadas carregadas
         self.loaded_layers = {}
         
+        # Histórico de mensagens do log de processamento
+        self._log_mensagens = []
+        
         # Network manager para downloads
         self.network_manager = QNetworkAccessManager()
         
@@ -918,6 +921,30 @@ class MainWindow(QMainWindow):
         self.btn_iniciar_processamento.setEnabled(False)
         proc_btns_layout.addWidget(self.btn_iniciar_processamento)
         
+        # Botão Reprocessar Parecer
+        self.btn_reprocessar_parecer = QPushButton("🔄 Parecer")
+        self.btn_reprocessar_parecer.setToolTip("Reprocessar apenas o julgamento e parecer final (rápido)")
+        self.btn_reprocessar_parecer.setEnabled(False)
+        self.btn_reprocessar_parecer.clicked.connect(self._reprocessar_parecer)
+        self.btn_reprocessar_parecer.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #8e44ad;
+                color: white;
+                border: none;
+                padding: 6px 8px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{
+                background-color: #7d3c98;
+            }}
+            QPushButton:disabled {{
+                background-color: #bdc3c7;
+            }}
+        """)
+        proc_btns_layout.addWidget(self.btn_reprocessar_parecer)
+        
         # Botão Laudos (antes estava em grupo separado)
         self.btn_visualizar_laudos = QPushButton("📊 Laudos")
         self.btn_visualizar_laudos.setToolTip("Visualizar resultados e gerar laudos em PDF")
@@ -956,10 +983,38 @@ class MainWindow(QMainWindow):
         self.processamento_log.setWordWrap(True)
         elegibilidade_layout.addWidget(self.processamento_log)
         
-        # Label informativo (substituindo laudos_info)
+        # Layout inferior: info + botão salvar log
+        info_log_layout = QHBoxLayout()
+        info_log_layout.setSpacing(4)
+        
         self.laudos_info = QLabel("")
         self.laudos_info.setStyleSheet(f"color: {self.COLORS['texto_claro']}; font-size: 10px;")
-        elegibilidade_layout.addWidget(self.laudos_info)
+        info_log_layout.addWidget(self.laudos_info, 1)
+        
+        self.btn_salvar_log = QToolButton()
+        self.btn_salvar_log.setIcon(self.style().standardIcon(self.style().SP_DialogSaveButton))
+        self.btn_salvar_log.setToolTip("Salvar .txt do Log")
+        self.btn_salvar_log.setFixedSize(24, 24)
+        self.btn_salvar_log.setEnabled(False)
+        self.btn_salvar_log.setStyleSheet("""
+            QToolButton {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: #f9f9f9;
+            }
+            QToolButton:hover {
+                background-color: #e0e0e0;
+                border-color: #999;
+            }
+            QToolButton:disabled {
+                background-color: #f0f0f0;
+                border-color: #ddd;
+            }
+        """)
+        self.btn_salvar_log.clicked.connect(self._salvar_log_txt)
+        info_log_layout.addWidget(self.btn_salvar_log)
+        
+        elegibilidade_layout.addLayout(info_log_layout)
         
         # Variáveis de configuração do processamento
         self.config_processamento = None
@@ -3431,9 +3486,11 @@ class MainWindow(QMainWindow):
             self.camada_elegiveis = layer
             self.gpkg_elegiveis = gpkg_path
             
-            # Habilitar botão de laudos
+            # Habilitar botões de laudos e reprocessar parecer
             if hasattr(self, 'btn_visualizar_laudos'):
                 self.btn_visualizar_laudos.setEnabled(True)
+            if hasattr(self, 'btn_reprocessar_parecer'):
+                self.btn_reprocessar_parecer.setEnabled(True)
             
             # Atualizar label informativo
             if hasattr(self, 'laudos_info'):
@@ -6242,12 +6299,12 @@ class MainWindow(QMainWindow):
         from qgis.PyQt.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
             QDoubleSpinBox, QSpinBox, QLineEdit, QPushButton, QLabel,
-            QScrollArea, QWidget, QTextEdit
+            QScrollArea, QWidget, QTextEdit, QTabWidget
         )
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Configurar Análise de Elegibilidade")
-        dialog.setMinimumSize(480, 650)
+        dialog.setMinimumSize(620, 720)
         
         layout = QVBoxLayout(dialog)
         
@@ -6257,8 +6314,14 @@ class MainWindow(QMainWindow):
         info_gpkg.setStyleSheet("color: #3498db; font-size: 10px; font-weight: bold; padding: 4px;")
         info_gpkg.setToolTip(gpkg_atual)
         layout.addWidget(info_gpkg)
-        
-        # Scroll area para as configurações
+
+        # ============================================================ #
+        # QTabWidget com 3 abas: Elegibilidade | Listas | Priorização   #
+        # ============================================================ #
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # ----- ABA 1: ELEGIBILIDADE (conteúdo original) ----- #
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_widget = QWidget()
@@ -6302,6 +6365,41 @@ class MainWindow(QMainWindow):
         tol_layout.addRow("Limite PRODES (6,25ha):", self.config_prodes_6ha)
         
         scroll_layout.addWidget(group_tolerancias)
+        
+        # --- Checkbox: Certidão MPF ---
+        self.config_certidao_mpf = QCheckBox("Verificação de inadimplência via certidão MPF")
+        self.config_certidao_mpf.setChecked(False)
+        self.config_certidao_mpf.setToolTip(
+            "Quando ativado, consulta automaticamente o portal do MPF para\n"
+            "emitir certidão de nada consta para cada CPF dos imóveis elegíveis.\n"
+            "Requer internet, Chrome instalado e chave 2Captcha configurada."
+        )
+        scroll_layout.addWidget(self.config_certidao_mpf)
+        
+        self.config_mpf_options_widget = QWidget()
+        mpf_layout = QFormLayout(self.config_mpf_options_widget)
+        mpf_layout.setContentsMargins(20, 0, 0, 0)
+        
+        self.config_api_key_2captcha = QLineEdit()
+        self.config_api_key_2captcha.setPlaceholderText("Chave da API 2Captcha")
+        self.config_api_key_2captcha.setEchoMode(QLineEdit.Password)
+        mpf_layout.addRow("Chave 2Captcha:", self.config_api_key_2captcha)
+        
+        pasta_widget = QWidget()
+        pasta_h = QHBoxLayout(pasta_widget)
+        pasta_h.setContentsMargins(0, 0, 0, 0)
+        self.config_pasta_certidoes = QLineEdit()
+        self.config_pasta_certidoes.setPlaceholderText("(opcional) Pasta para salvar os PDFs das certidões")
+        pasta_h.addWidget(self.config_pasta_certidoes)
+        btn_pasta_certidoes = QPushButton("...")
+        btn_pasta_certidoes.setFixedWidth(30)
+        btn_pasta_certidoes.clicked.connect(lambda: self._selecionar_pasta_certidoes())
+        pasta_h.addWidget(btn_pasta_certidoes)
+        mpf_layout.addRow("Salvar PDFs em:", pasta_widget)
+        
+        self.config_mpf_options_widget.setVisible(False)
+        self.config_certidao_mpf.toggled.connect(self.config_mpf_options_widget.setVisible)
+        scroll_layout.addWidget(self.config_mpf_options_widget)
         
         # --- Grupo: Thresholds de RVN ---
         group_rvn = QGroupBox("Thresholds de RVN por Fitofisionomia")
@@ -6419,8 +6517,63 @@ class MainWindow(QMainWindow):
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
-        
+        tabs.addTab(scroll, "Elegibilidade")
+
+        # ----- ABA 2: LISTAS DE MUNICÍPIOS ----- #
+        try:
+            from Plugin_FMais.ui.dialogs.listas_municipios_widget import (
+                ListasMunicipiosWidget, LISTA_PRIORITARIOS,
+                LISTA_DESMATE_CONTROLE, LISTA_PROGRAMA_UNIAO,
+            )
+            # Listas iniciais (config atual ou padrão)
+            cfg_atual = getattr(self, 'config_processamento', None)
+            if cfg_atual:
+                listas_iniciais = {
+                    LISTA_PRIORITARIOS: set(getattr(cfg_atual, 'geocodigos_prioritarios', set())),
+                    LISTA_DESMATE_CONTROLE: set(getattr(cfg_atual, 'geocodigos_desmate_controle', set())),
+                    LISTA_PROGRAMA_UNIAO: set(getattr(cfg_atual, 'geocodigos_programa_uniao', set())),
+                }
+            else:
+                from Plugin_FMais.core.processamento_elegiveis import ConfigProcessamento
+                cfg_def = ConfigProcessamento()
+                listas_iniciais = {
+                    LISTA_PRIORITARIOS: set(cfg_def.geocodigos_prioritarios),
+                    LISTA_DESMATE_CONTROLE: set(cfg_def.geocodigos_desmate_controle),
+                    LISTA_PROGRAMA_UNIAO: set(cfg_def.geocodigos_programa_uniao),
+                }
+            self._listas_municipios_widget = ListasMunicipiosWidget(
+                gpkg_atual if gpkg_atual != "Nenhum" else "",
+                listas_iniciais,
+                parent=dialog,
+            )
+            tabs.addTab(self._listas_municipios_widget, "Listas de Municípios")
+        except Exception as e:
+            placeholder = QLabel(f"Erro ao carregar aba de Listas: {e}")
+            placeholder.setStyleSheet("color: #c0392b; padding: 20px;")
+            tabs.addTab(placeholder, "Listas de Municípios")
+            self._listas_municipios_widget = None
+
+        # ----- ABA 3: PRIORIZAÇÃO ----- #
+        try:
+            from Plugin_FMais.ui.dialogs.priorizacao_widget import PriorizacaoWidget
+            cfg_atual = getattr(self, 'config_processamento', None)
+            cfg_dict = {}
+            if cfg_atual:
+                for chave in (
+                    'crit_a1_ativo', 'crit_a2_ativo', 'crit_a3_ativo',
+                    'crit_a4_ativo', 'crit_a5_ativo', 'crit_a6_ativo',
+                    'crit_a7_ativo', 'crit_a8_ativo',
+                    'planilha_candidatos', 'mapeamento_candidatos',
+                ):
+                    cfg_dict[chave] = getattr(cfg_atual, chave, None)
+            self._priorizacao_widget = PriorizacaoWidget(cfg_dict, parent=dialog)
+            tabs.addTab(self._priorizacao_widget, "Priorização")
+        except Exception as e:
+            placeholder = QLabel(f"Erro ao carregar aba de Priorização: {e}")
+            placeholder.setStyleSheet("color: #c0392b; padding: 20px;")
+            tabs.addTab(placeholder, "Priorização")
+            self._priorizacao_widget = None
+
         # Botões
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -6478,6 +6631,15 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[Lista CAR] Erro ao carregar: {e}")
             return ""
+    
+    def _selecionar_pasta_certidoes(self):
+        """Abre diálogo para selecionar pasta onde salvar PDFs das certidões MPF."""
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Selecionar pasta para certidões MPF",
+            self.config_pasta_certidoes.text() or ""
+        )
+        if pasta:
+            self.config_pasta_certidoes.setText(pasta)
     
     def _atualizar_contador_car(self):
         """Atualiza o contador de CARs na lista."""
@@ -6540,6 +6702,8 @@ class MainWindow(QMainWindow):
             'rvn': self._encontrar_camada_gpkg(gpkg_atual, ['vegetacaonativa', 'vegetacao_nativa', 'rvn']),
             'amazonia_legal': self._encontrar_camada_gpkg(gpkg_atual, ['amazonialegal', 'amazonia_legal', 'amzl']),
             'municipios': self._encontrar_camada_gpkg(gpkg_atual, ['municipios', 'municipio', 'municípios']),
+            'biomas': self._encontrar_camada_gpkg(gpkg_atual, ['biomas', 'bioma']),
+            'areas_prioritarias': self._encontrar_camada_gpkg(gpkg_atual, ['areasprioritarias', 'areas_prioritarias', 'areaspriorit']),
         }
         
         # Verificar se camada de imóveis foi encontrada
@@ -6557,6 +6721,25 @@ class MainWindow(QMainWindow):
             status = f"✓ {value}" if value else "⚠ Não encontrada"
             print(f"  - {key}: {status}")
         
+        # Coletar listas de municípios da aba "Listas de Municípios"
+        listas_munis = {}
+        if hasattr(self, '_listas_municipios_widget') and self._listas_municipios_widget:
+            try:
+                listas_munis = self._listas_municipios_widget.get_listas()
+            except Exception as e:
+                print(f"[Config] Erro ao obter listas de municípios: {e}")
+
+        from Plugin_FMais.ui.dialogs.listas_municipios_widget import (
+            LISTA_PRIORITARIOS, LISTA_DESMATE_CONTROLE, LISTA_PROGRAMA_UNIAO,
+        )
+        # Coletar configurações de priorização
+        cfg_prio = {}
+        if hasattr(self, '_priorizacao_widget') and self._priorizacao_widget:
+            try:
+                cfg_prio = self._priorizacao_widget.get_config_priorizacao()
+            except Exception as e:
+                print(f"[Config] Erro ao obter config de priorização: {e}")
+
         # Criar objeto de configuração com nomes das camadas detectados
         self.config_processamento = ConfigProcessamento(
             gpkg_path=gpkg_atual,
@@ -6575,6 +6758,8 @@ class MainWindow(QMainWindow):
             camada_rvn=camadas_detectadas['rvn'] or "vegetacao_nativa",
             camada_amazonia_legal=camadas_detectadas['amazonia_legal'] or "amazonia_legal",
             camada_municipios=camadas_detectadas['municipios'] or "municipios",
+            camada_biomas=camadas_detectadas['biomas'] or "biomas",
+            camada_areas_prioritarias=camadas_detectadas['areas_prioritarias'] or "areas_prioritarias_conservacao",
             
             # Tolerâncias
             tolerancia_fp_uc=self.config_tol_fp_uc.value(),
@@ -6599,6 +6784,28 @@ class MainWindow(QMainWindow):
             
             # Lista de CARs a remover da análise de sobreposição
             lista_car_remover=self.config_lista_car_remover.toPlainText() if hasattr(self, 'config_lista_car_remover') else "",
+            
+            # Verificação de certidão MPF
+            verificar_certidao_mpf=self.config_certidao_mpf.isChecked() if hasattr(self, 'config_certidao_mpf') else False,
+            api_key_2captcha=self.config_api_key_2captcha.text().strip() if hasattr(self, 'config_api_key_2captcha') else "",
+            pasta_certidoes_mpf=self.config_pasta_certidoes.text().strip() if hasattr(self, 'config_pasta_certidoes') else "",
+
+            # Listas de municípios (da aba "Listas de Municípios")
+            geocodigos_prioritarios=listas_munis.get(LISTA_PRIORITARIOS) or ConfigProcessamento.__dataclass_fields__['geocodigos_prioritarios'].default_factory(),
+            geocodigos_desmate_controle=listas_munis.get(LISTA_DESMATE_CONTROLE) or ConfigProcessamento.__dataclass_fields__['geocodigos_desmate_controle'].default_factory(),
+            geocodigos_programa_uniao=listas_munis.get(LISTA_PROGRAMA_UNIAO) or ConfigProcessamento.__dataclass_fields__['geocodigos_programa_uniao'].default_factory(),
+
+            # Critérios de priorização ativos
+            crit_a1_ativo=cfg_prio.get('crit_a1_ativo', True),
+            crit_a2_ativo=cfg_prio.get('crit_a2_ativo', True),
+            crit_a3_ativo=cfg_prio.get('crit_a3_ativo', True),
+            crit_a4_ativo=cfg_prio.get('crit_a4_ativo', True),
+            crit_a5_ativo=cfg_prio.get('crit_a5_ativo', True),
+            crit_a6_ativo=cfg_prio.get('crit_a6_ativo', True),
+            crit_a7_ativo=cfg_prio.get('crit_a7_ativo', True),
+            crit_a8_ativo=cfg_prio.get('crit_a8_ativo', True),
+            planilha_candidatos=cfg_prio.get('planilha_candidatos', "") or "",
+            mapeamento_candidatos=cfg_prio.get('mapeamento_candidatos', {}) or {},
         )
         
         # Atualizar UI
@@ -6639,6 +6846,8 @@ class MainWindow(QMainWindow):
             'rvn': self._encontrar_camada_gpkg(gpkg_atual, ['vegetacaonativa', 'vegetacao_nativa', 'rvn']),
             'amazonia_legal': self._encontrar_camada_gpkg(gpkg_atual, ['amazonialegal', 'amazonia_legal', 'amzl']),
             'municipios': self._encontrar_camada_gpkg(gpkg_atual, ['municipios', 'municipio', 'municípios']),
+            'biomas': self._encontrar_camada_gpkg(gpkg_atual, ['biomas', 'bioma']),
+            'areas_prioritarias': self._encontrar_camada_gpkg(gpkg_atual, ['areasprioritarias', 'areas_prioritarias', 'areaspriorit']),
         }
         
         # Verificar se camada de imóveis foi encontrada
@@ -6668,6 +6877,8 @@ class MainWindow(QMainWindow):
             camada_rvn=camadas_detectadas['rvn'] or "vegetacao_nativa",
             camada_amazonia_legal=camadas_detectadas['amazonia_legal'] or "amazonia_legal",
             camada_municipios=camadas_detectadas['municipios'] or "municipios",
+            camada_biomas=camadas_detectadas.get('biomas') or "biomas",
+            camada_areas_prioritarias=camadas_detectadas.get('areas_prioritarias') or "areas_prioritarias_conservacao",
             
             # Valores padrão para tolerâncias
             tolerancia_fp_uc=0.05,
@@ -6788,6 +6999,23 @@ class MainWindow(QMainWindow):
         
         return tipo, ausentes, mapeamento
     
+    def _obter_colunas_camada_imoveis(self):
+        """Retorna a lista de nomes de campos da camada de imóveis no GeoPackage."""
+        gpkg_path = self.gpkg_path.text() if hasattr(self, 'gpkg_path') else ""
+        if not gpkg_path or not os.path.exists(gpkg_path):
+            return []
+
+        camada_imoveis = self._encontrar_camada_gpkg(gpkg_path, ['imoveis', 'imovel', 'imóveis', 'imóvel'])
+        if not camada_imoveis:
+            return []
+
+        uri = f"{gpkg_path}|layername={camada_imoveis}"
+        layer = QgsVectorLayer(uri, camada_imoveis, "ogr")
+        if not layer.isValid():
+            return []
+
+        return [f.name() for f in layer.fields()]
+
     def _iniciar_processamento_elegiveis(self):
         """Inicia o processamento de elegibilidade."""
         # Se não tem configuração, criar uma padrão automaticamente
@@ -6804,15 +7032,40 @@ class MainWindow(QMainWindow):
             )
             return
         
-        # Detectar tipo de fonte de dados
-        tipo_fonte, ausentes, mapeamento = self._detectar_tipo_fonte_dados()
-        
-        # Preparar mensagem de confirmação
-        if tipo_fonte == 'completa':
+        # Obter colunas da camada de imóveis
+        colunas_layer = self._obter_colunas_camada_imoveis()
+        if not colunas_layer:
+            QMessageBox.warning(
+                self,
+                "Camada de Imóveis",
+                "Não foi possível localizar a camada de imóveis no GeoPackage.\n\n"
+                "Verifique se o GeoPackage contém uma camada com nome 'imoveis'."
+            )
+            return
+
+        # Colunas esperadas no formato padrão (Metabase/SICAR)
+        from Plugin_FMais.ui.dialogs.mapeamento_colunas import COLUNAS_ESPERADAS, ALIASES_CONHECIDOS
+
+        colunas_lower = {c.lower() for c in colunas_layer}
+        colunas_encontradas = set()
+        mapeamento_auto = {}
+
+        for campo_interno, _, _ in COLUNAS_ESPERADAS:
+            aliases = ALIASES_CONHECIDOS.get(campo_interno, [campo_interno])
+            for alias in aliases:
+                if alias.lower() in colunas_lower:
+                    real_name = next(c for c in colunas_layer if c.lower() == alias.lower())
+                    mapeamento_auto[campo_interno] = real_name
+                    colunas_encontradas.add(campo_interno)
+                    break
+
+        todas_presentes = len(colunas_encontradas) == len(COLUNAS_ESPERADAS)
+
+        if todas_presentes:
+            mapeamento = mapeamento_auto
             titulo = "Análise Completa"
-            icone = "✅"
             msg = (
-                f"{icone} Dados completos detectados (fonte: Metabase/SICAR)\n\n"
+                "✅ Todas as colunas esperadas foram identificadas na camada de imóveis.\n\n"
                 "Todas as análises serão realizadas:\n"
                 "• Módulos fiscais (individual e soma por CPF)\n"
                 "• Florestas Públicas TIPO B (com verificação de documentos)\n"
@@ -6825,49 +7078,31 @@ class MainWindow(QMainWindow):
                 "• Municípios Prioritários\n\n"
                 "Deseja iniciar o processamento?"
             )
-        elif tipo_fonte in ('geoserver', 'consulta_publica'):
-            titulo = "Análise Preliminar"
-            icone = "⚠️"
-            fonte_nome = "Geoserver" if tipo_fonte == 'geoserver' else "Consulta Pública"
-            ausentes_text = "\n".join([f"  • {a}" for a in ausentes])
-            msg = (
-                f"{icone} Dados parciais detectados (fonte: {fonte_nome})\n\n"
-                "Análises que NÃO serão realizadas por falta de dados:\n"
-                f"{ausentes_text}\n\n"
-                "Análises que SERÃO realizadas:\n"
-                "• Módulos fiscais (apenas individual)\n"
-                "• Florestas Públicas TIPO B (sem documentos)\n"
-                "• Unidades de Conservação\n"
-                "• Quilombolas e Terras Indígenas\n"
-                "• Embargos IBAMA/ICMBio (apenas área)\n"
-                "• Sobreposição com outros CARs\n"
-                "• PRODES\n"
-                "• RVN e Fitofisionomia\n"
-                "• Municípios Prioritários\n\n"
-                "Deseja iniciar o processamento preliminar?"
+            reply = QMessageBox.question(
+                self, titulo, msg,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
             )
+            if reply != QMessageBox.Yes:
+                return
         else:
-            QMessageBox.warning(
-                self,
-                "Estrutura Desconhecida",
-                "Não foi possível identificar a estrutura dos dados de imóveis.\n\n"
-                "Verifique se a camada de imóveis possui as colunas esperadas."
-            )
-            return
-        
-        # Mostrar confirmação
-        reply = QMessageBox.question(
-            self,
-            titulo,
-            msg,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        
-        if reply != QMessageBox.Yes:
-            return
-        
-        # Armazenar tipo de fonte e mapeamento na configuração
+            faltantes = [
+                desc for campo, desc, _ in COLUNAS_ESPERADAS
+                if campo not in colunas_encontradas
+            ]
+            from Plugin_FMais.ui.dialogs.mapeamento_colunas import DialogoMapeamentoColunas
+            dlg = DialogoMapeamentoColunas(colunas_layer, parent=self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            mapeamento = dlg.get_mapeamento()
+
+        # Determinar tipo de análise com base nos campos mapeados
+        tem_cpf = "cpf_cnpj" in mapeamento
+        tem_docs = "documentos" in mapeamento
+        if tem_cpf and tem_docs:
+            tipo_fonte = "completa"
+        else:
+            tipo_fonte = "parcial"
+
         self.config_processamento.tipo_fonte = tipo_fonte
         self.config_processamento.mapeamento_colunas = mapeamento
             
@@ -6880,8 +7115,12 @@ class MainWindow(QMainWindow):
             self.processamento_progress.setValue(value)
             QApplication.processEvents()
             
+        self._log_mensagens = []
+        self.btn_salvar_log.setEnabled(False)
+        
         def update_log(msg):
             self.processamento_log.setText(msg)
+            self._log_mensagens.append(msg)
             QApplication.processEvents()
             
         # Mostrar barra de progresso
@@ -6914,8 +7153,9 @@ class MainWindow(QMainWindow):
                 self.camada_elegiveis = resultado
                 self.gpkg_elegiveis = gpkg_path
                 
-                # Habilitar botão de laudos
+                # Habilitar botões de laudos e reprocessar parecer
                 self.btn_visualizar_laudos.setEnabled(True)
+                self.btn_reprocessar_parecer.setEnabled(True)
                 self.laudos_info.setText(f"✓ {resultado.featureCount()} imóveis disponíveis para análise")
                 self.laudos_info.setStyleSheet(f"color: #27ae60; font-size: 10px;")
                 
@@ -6957,6 +7197,126 @@ class MainWindow(QMainWindow):
             self.processamento_progress.setVisible(False)
             self.btn_iniciar_processamento.setEnabled(True)
             self.btn_configurar_analise.setEnabled(True)
+            if self._log_mensagens:
+                self.btn_salvar_log.setEnabled(True)
+    
+    # =========================================================================
+    # REPROCESSAR PARECER
+    # =========================================================================
+    
+    def _reprocessar_parecer(self):
+        """Reprocessa apenas o julgamento e parecer final da camada de elegíveis."""
+        camada = self._obter_camada_elegiveis()
+        if not camada:
+            QMessageBox.warning(
+                self, "Sem Camada",
+                "Nenhuma camada de elegíveis encontrada.\n"
+                "Execute o processamento completo primeiro."
+            )
+            return
+        
+        # --- Obter mapeamento de colunas ---
+        mapeamento = None
+        
+        # 1) Tentar usar o mapeamento já em memória (mesma sessão)
+        if (hasattr(self, 'config_processamento') and self.config_processamento
+                and getattr(self.config_processamento, 'mapeamento_colunas', None)):
+            mapeamento = self.config_processamento.mapeamento_colunas
+        
+        # 2) Se não disponível, auto-detectar a partir das colunas da camada
+        if not mapeamento:
+            from Plugin_FMais.ui.dialogs.mapeamento_colunas import COLUNAS_ESPERADAS, ALIASES_CONHECIDOS
+            colunas_layer = [f.name() for f in camada.fields()]
+            colunas_lower = {c.lower() for c in colunas_layer}
+            mapeamento_auto = {}
+            
+            for campo_interno, _, _ in COLUNAS_ESPERADAS:
+                aliases = ALIASES_CONHECIDOS.get(campo_interno, [campo_interno])
+                for alias in aliases:
+                    if alias.lower() in colunas_lower:
+                        real_name = next(c for c in colunas_layer if c.lower() == alias.lower())
+                        mapeamento_auto[campo_interno] = real_name
+                        break
+            
+            if len(mapeamento_auto) == len(COLUNAS_ESPERADAS):
+                mapeamento = mapeamento_auto
+            else:
+                # 3) Auto-detecção incompleta: abrir diálogo de mapeamento
+                from Plugin_FMais.ui.dialogs.mapeamento_colunas import DialogoMapeamentoColunas
+                dlg = DialogoMapeamentoColunas(colunas_layer, parent=self)
+                if dlg.exec_() != QDialog.Accepted:
+                    return
+                mapeamento = dlg.get_mapeamento()
+        
+        resposta = QMessageBox.question(
+            self, "Reprocessar Parecer",
+            f"Isso vai reler as colunas de critérios e recalcular:\n\n"
+            f"  1) Elegivel_F1 e Elegivel_F2\n"
+            f"  2) Elegibilidade (Fase 1 / Fase 2 / Inelegível)\n"
+            f"  3) Parecer final (texto do laudo)\n\n"
+            f"para os {camada.featureCount()} imóveis da camada '{camada.name()}'.\n\n"
+            f"As etapas espaciais (áreas, sobreposições, RVN) NÃO serão refeitas.\n"
+            f"Útil após editar manualmente colunas como prodes_6ha, embargo_ibama, etc.\n\n"
+            f"Deseja continuar?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if resposta != QMessageBox.Yes:
+            return
+        
+        from Plugin_FMais.core.processamento_elegiveis import ProcessamentoElegiveis
+        
+        def update_log(msg):
+            self.processamento_log.setText(msg)
+            self._log_mensagens.append(msg)
+            QApplication.processEvents()
+        
+        self.btn_reprocessar_parecer.setEnabled(False)
+        try:
+            ok = ProcessamentoElegiveis.reprocessar_parecer(
+                camada, callback_log=update_log, mapeamento=mapeamento
+            )
+            if ok:
+                self.processamento_status.setText("✓ Parecer reprocessado com sucesso!")
+                self.processamento_status.setStyleSheet("color: #27ae60; font-size: 10px; font-weight: bold;")
+                if self._log_mensagens:
+                    self.btn_salvar_log.setEnabled(True)
+                camada.triggerRepaint()
+            else:
+                QMessageBox.warning(self, "Aviso", "Não foi possível reprocessar o parecer.\nVerifique os campos da camada.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao reprocessar parecer:\n{e}")
+            traceback.print_exc()
+        finally:
+            self.btn_reprocessar_parecer.setEnabled(True)
+    
+    # =========================================================================
+    # SALVAR LOG
+    # =========================================================================
+    
+    def _salvar_log_txt(self):
+        """Salva o log do processamento em um arquivo .txt."""
+        if not self._log_mensagens:
+            QMessageBox.information(self, "Log Vazio", "Nenhum log de processamento disponível.")
+            return
+        
+        default_name = f"log_processamento_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar Log do Processamento", default_name,
+            "Arquivos de Texto (*.txt);;Todos os Arquivos (*)"
+        )
+        if not path:
+            return
+        
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"Log de Processamento - Floresta+ Amazônia\n")
+                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write("=" * 60 + "\n\n")
+                for msg in self._log_mensagens:
+                    f.write(msg + "\n")
+            QMessageBox.information(self, "Log Salvo", f"Log salvo com sucesso em:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao salvar log:\n{e}")
     
     # =========================================================================
     # FUNÇÕES DE LAUDOS

@@ -549,10 +549,10 @@ class VisualizadorLaudosDialog(QDialog):
         nom_bairro = self._get_attr(feat, ["nom_bairro"], "")
         municipio = self._get_attr(feat, ["municipio"], "N/D")
         uf = self._get_attr(feat, ["uf", "cod_estado"], "N/D")
-        status = self._get_attr(feat, ["status", "ind_status", "status_imo"], "N/D")
-        condicao = self._get_attr(feat, ["condicao", "des_condic"], "N/D")
-        tipo_imovel = self._get_attr(feat, ["tipo_imove", "ind_tipo", "tipo_imovel"], "")
-        area = self._get_attr(feat, ["area_imove", "area", "num_area"], 0)
+        status = self._get_attr(feat, ["status", "ind_status", "status_imo", "status_imovel", "status_imove"], "N/D")
+        condicao = self._get_attr(feat, ["condicao", "des_condic", "condicao_imovel"], "N/D")
+        tipo_imovel = self._get_attr(feat, ["tipo_imove", "ind_tipo", "tipo_imovel", "tipo"], "")
+        area = self._get_attr(feat, ["area_imove", "area", "num_area", "area_ha", "area_imovel"], 0)
         rvn = self._get_attr(feat, ["RVN_area"], 0)
         rvn_pct = self._get_attr(feat, ["percent_rvn", "rvn_pct"], 0)
         
@@ -695,7 +695,13 @@ class VisualizadorLaudosDialog(QDialog):
         
         avaliacao_layout.addWidget(tabela)
         self.layout_detalhes.addWidget(avaliacao_group)
-        
+
+        # === PRIORIZAÇÃO (se disponível) ===
+        try:
+            self._adicionar_secao_priorizacao(feat)
+        except Exception as _e:
+            pass
+
         # === RESULTADO FINAL ===
         # Coluna 'elegibilidade' tem valores: "Fase 1", "Fase 2" ou "Inelegível"
         resultado = self._get_attr(feat, ["elegibilidade"], "N/D")
@@ -788,6 +794,104 @@ class VisualizadorLaudosDialog(QDialog):
                 if valor is not None:
                     return valor
         return default
+
+    def _adicionar_secao_priorizacao(self, feat):
+        """Adiciona seção 'Critérios de Priorização' se as colunas existirem."""
+        from qgis.PyQt.QtWidgets import QGroupBox, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QLabel
+        from qgis.PyQt.QtCore import Qt
+        from qgis.PyQt.QtGui import QColor
+
+        # Verificar se a camada tem colunas de priorização
+        campos_camada = {f.name() for f in feat.fields()}
+        if "score_priorizacao" not in campos_camada:
+            return  # plugin processou sem priorização
+
+        criterios_prio = [
+            ("A1", "Municípios prioritários (>50% área)", "prio_mun_prioritario", 1),
+            ("A2", "Mun. desmate sob controle (>50% área)", "prio_mun_controle", 1),
+            ("A3", "Mun. Programa União (>50% área)", "prio_mun_uniao", 1),
+            ("A4", "Áreas prior. biodiversidade (intersect)", "prio_biodiversidade", 1),
+            ("A5", "Entorno UC 3km (exceto APA/RPPN)", "prio_entorno_uc", 1),
+            ("A6", "Sobreposto ≥50% APA/RPPN", "prio_apa_rppn", 1),
+            ("A7", "Entorno TI 3km", "prio_entorno_ti", 1),
+            ("A8", "Bioma Amazônia (IBGE)", "prio_bioma_amazonia", 1),
+            ("P1", "Inscrito CAF/DAP-PRONAF", "prio_caf", 3),
+            ("P2", "Proprietária sexo feminino", "prio_sexo_feminino", 3),
+            ("P3", "Produtor sociobiodiversidade", "prio_sociobio", 3),
+        ]
+
+        score = self._get_attr(feat, ["score_priorizacao"], 0) or 0
+        ranking = self._get_attr(feat, ["ranking"], 0) or 0
+        pct_rvn = self._get_attr(feat, ["pct_rvn_total"], 0) or 0
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            ranking = int(ranking)
+        except (TypeError, ValueError):
+            ranking = 0
+        try:
+            pct_rvn = float(pct_rvn)
+        except (TypeError, ValueError):
+            pct_rvn = 0.0
+
+        grupo = QGroupBox("Critérios de Priorização")
+        grupo.setStyleSheet(self._get_groupbox_style())
+        layout = QVBoxLayout(grupo)
+
+        # Resumo
+        if ranking > 0:
+            resumo = QLabel(
+                f"<b>Score:</b> {score}    "
+                f"<b>Ranking:</b> {ranking}º    "
+                f"<b>RVN/Área:</b> {pct_rvn*100:.1f}%"
+            )
+        else:
+            resumo = QLabel(
+                f"<b>Score:</b> {score}    "
+                f"<b>Ranking:</b> não aplicável (imóvel não elegível)    "
+                f"<b>RVN/Área:</b> {pct_rvn*100:.1f}%"
+            )
+        resumo.setStyleSheet("font-size: 11px; padding: 4px;")
+        layout.addWidget(resumo)
+
+        # Tabela
+        tabela = QTableWidget()
+        tabela.setColumnCount(4)
+        tabela.setRowCount(len(criterios_prio))
+        tabela.setHorizontalHeaderLabels(["ID", "Critério", "Peso", "Resultado"])
+        tabela.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        tabela.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        tabela.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        tabela.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        tabela.verticalHeader().setVisible(False)
+        tabela.setEditTriggers(QTableWidget.NoEditTriggers)
+        tabela.setSelectionMode(QTableWidget.NoSelection)
+        tabela.setStyleSheet("""
+            QTableWidget { background-color: white; gridline-color: #ddd; font-size: 10px; }
+            QHeaderView::section { background-color: #34495e; color: white;
+                                    padding: 4px; font-weight: bold; border: 1px solid #2c3e50; }
+        """)
+
+        for row, (sigla, nome, campo, peso) in enumerate(criterios_prio):
+            tabela.setItem(row, 0, QTableWidgetItem(sigla))
+            tabela.setItem(row, 1, QTableWidgetItem(nome))
+            item_peso = QTableWidgetItem(str(peso))
+            item_peso.setTextAlignment(Qt.AlignCenter)
+            tabela.setItem(row, 2, item_peso)
+
+            valor = str(self._get_attr(feat, [campo], "Não") or "Não").strip()
+            cor = "#27ae60" if valor.lower() == "sim" else "#7f8c8d"
+            item_res = QTableWidgetItem(valor)
+            item_res.setForeground(QColor(cor))
+            item_res.setTextAlignment(Qt.AlignCenter)
+            tabela.setItem(row, 3, item_res)
+
+        tabela.resizeRowsToContents()
+        tabela.setMinimumHeight(280)
+        layout.addWidget(tabela)
+        self.layout_detalhes.addWidget(grupo)
     
     def _exportar_estatisticas(self):
         """Exporta as estatísticas para um arquivo."""

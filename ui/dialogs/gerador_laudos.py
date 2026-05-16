@@ -200,12 +200,12 @@ class GeradorLaudosThread(QThread):
         # Alguns bancos tem endereço “Endereço: Av. ...” e bairro separado
         nom_bairro = self._get_attr(feat, ["nom_bairro"], "")
 
-        status = self._get_attr(feat, ["status", "ind_status", "status_imo"], "N/D")
-        tipo_imovel = self._get_attr(feat, ["tipo_imove", "ind_tipo", "tipo_imovel"], "")
-        condicao = self._get_attr(feat, ["condicao", "des_condic"], "N/D")
+        status = self._get_attr(feat, ["status", "ind_status", "status_imo", "status_imovel", "status_imove"], "N/D")
+        tipo_imovel = self._get_attr(feat, ["tipo_imove", "ind_tipo", "tipo_imovel", "tipo"], "")
+        condicao = self._get_attr(feat, ["condicao", "des_condic", "condicao_imovel"], "N/D")
 
         # área e RVN
-        area = self._get_attr(feat, ["area_imove", "area", "num_area"], 0)
+        area = self._get_attr(feat, ["area_imove", "area", "num_area", "area_ha", "area_imovel"], 0)
         rvn = self._get_attr(feat, ["RVN_area", "rvn_area", "rvn"], 0)
         rvn_pct = self._get_attr(feat, ["percent_rvn", "rvn_pct", "rvn_percent"], 0)
 
@@ -506,6 +506,24 @@ class GeradorLaudosThread(QThread):
         ]))
         story.append(tbl)
         story.append(Spacer(1, 1 * mm))
+
+        # ---------------------------------------------------------------------
+        # 2b) Tabela de Critérios de Priorização (se disponível)
+        # ---------------------------------------------------------------------
+        try:
+            self._adicionar_tabela_priorizacao(
+                story, feat, w_total,
+                small=small,
+                small_center=small_center,
+                header_white=header_white,
+                header_white_center=header_white_center,
+                crit_style=crit_style,
+                font_bold=font_bold,
+                BLUE_HEADER=BLUE_HEADER,
+                GRID=GRID,
+            )
+        except Exception:
+            pass
 
         # ---------------------------------------------------------------------
         # 3) Resultado Final (caixa vermelha com faixa e justificativa)
@@ -1036,6 +1054,98 @@ class GeradorLaudosThread(QThread):
                 if valor is not None:
                     return valor
         return default
+
+    def _adicionar_tabela_priorizacao(
+        self, story, feat, w_total,
+        small=None, small_center=None, header_white=None,
+        header_white_center=None, crit_style=None, font_bold="Helvetica-Bold",
+        BLUE_HEADER=None, GRID=None,
+    ):
+        """Adiciona tabela de critérios de priorização ao laudo (se houver dados)."""
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+        campos_camada = {f.name() for f in feat.fields()}
+        if "score_priorizacao" not in campos_camada:
+            return  # plugin processou sem priorização
+
+        criterios = [
+            ("A1", "Municípios prioritários (>50% área)", "prio_mun_prioritario", 1),
+            ("A2", "Municípios desmate sob controle (>50% área)", "prio_mun_controle", 1),
+            ("A3", "Municípios Programa União (>50% área)", "prio_mun_uniao", 1),
+            ("A4", "Áreas prior. biodiversidade (intersect)", "prio_biodiversidade", 1),
+            ("A5", "Entorno UC 3km (exceto APA/RPPN)", "prio_entorno_uc", 1),
+            ("A6", "Sobreposto ≥50% APA/RPPN", "prio_apa_rppn", 1),
+            ("A7", "Entorno TI 3km", "prio_entorno_ti", 1),
+            ("A8", "Bioma Amazônia (IBGE)", "prio_bioma_amazonia", 1),
+            ("P1", "Inscrito CAF/DAP-PRONAF", "prio_caf", 3),
+            ("P2", "Proprietária sexo feminino", "prio_sexo_feminino", 3),
+            ("P3", "Produtor sociobiodiversidade", "prio_sociobio", 3),
+        ]
+
+        score = self._get_attr(feat, ["score_priorizacao"], 0) or 0
+        ranking = self._get_attr(feat, ["ranking"], 0) or 0
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            ranking = int(ranking)
+        except (TypeError, ValueError):
+            ranking = 0
+
+        # Cabeçalho com título da seção
+        titulo_prio = (
+            f'<b>Critérios de Priorização (Item 6 do Edital)</b> &nbsp;&nbsp; '
+            f'Score: <b>{score}</b>'
+            + (f' &nbsp;&nbsp; Ranking: <b>{ranking}º</b>' if ranking > 0 else '')
+        )
+        story.append(Paragraph(titulo_prio, small or crit_style))
+        story.append(Spacer(1, 1 * mm))
+
+        OK = colors.HexColor("#27ae60")
+        NA = colors.HexColor("#7f8c8d")
+
+        table_data = [
+            [
+                Paragraph("<b>ID</b>", header_white_center),
+                Paragraph("<b>Critério</b>", header_white),
+                Paragraph("<b>Peso</b>", header_white_center),
+                Paragraph("<b>Resultado</b>", header_white_center),
+            ]
+        ]
+
+        for sigla, nome, campo, peso in criterios:
+            valor = str(self._get_attr(feat, [campo], "Não") or "Não").strip()
+            cor = OK if valor.lower() == "sim" else NA
+            table_data.append([
+                Paragraph(sigla, small_center),
+                Paragraph(nome, crit_style),
+                Paragraph(str(peso), small_center),
+                Paragraph(f'<font color="{cor.hexval()}">{valor}</font>', small_center),
+            ])
+
+        tbl = Table(
+            table_data,
+            colWidths=[w_total * 0.08, w_total * 0.62, w_total * 0.10, w_total * 0.20],
+        )
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), BLUE_HEADER),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), font_bold),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.3, GRID),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f8f8")]),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 1 * mm))
 
     def _render_map(self, feat, output_path, width_px=300, height_px=420, 
                      include_overlays=False, vegetation_only=False):
